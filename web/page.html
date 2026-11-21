@@ -1,0 +1,9 @@
+<!doctype html><html lang="fr"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Media Center</title>
+<style>{css}</style>
+<header><b>🎬 Media Center</b>
+<a class="tab {accueil}" href="/">Accueil</a><a class="tab {films}" href="/?k=films">Films ({nfilms})</a><a class="tab {series}" href="/?k=series">Séries ({nseries})</a>
+<a class="tab {musique}" href="/?k=musique">Musique ({nmusique})</a>
+<input id="q" placeholder="Rechercher…" autofocus><button class="bt" id="rs" title="Chercher les nouveaux fichiers" aria-label="Actualiser la bibliothèque">🔄</button></header>
+<main>{player}{intro}<ul id="l" class="{grid}">{items}</ul>{pied}</main>
+<script>{js}</script></html>

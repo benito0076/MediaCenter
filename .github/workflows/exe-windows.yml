@@ -18,7 +18,7 @@ jobs:
           pip install pyinstaller==6.11.1 pystray==0.19.5 pillow==11.0.0
           python test_mediacenter.py
       - name: Fabrication du .exe
-        run: pyinstaller --onefile --noconsole --name MediaCenter --hidden-import pystray._win32 --add-data "jassub;jassub" --add-data "hlsjs;hlsjs" mediacenter.py
+        run: pyinstaller --onefile --noconsole --name MediaCenter --hidden-import pystray._win32 --add-data "jassub;jassub" --add-data "hlsjs;hlsjs" --add-data "web;web" mediacenter.py
       - name: Essai du .exe (démarrage sans console, page, JASSUB et hls.js embarqués, 2e lancement)
         shell: pwsh
         run: |
