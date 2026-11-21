@@ -918,11 +918,12 @@ def appliquer_maj():
             raise OSError("téléchargement incomplet")
         bat = exe.with_name("maj_mediacenter.bat")
         pere = os.getppid()  # le lanceur PyInstaller, qui garde le .exe ouvert jusqu'à la fin
-        # (ping comme minuterie : « timeout » refuse de tourner sans console)
+        # (ping comme minuterie : « timeout » refuse de tourner sans console ; on cherche le NOM du programme sur la ligne
+        # du processus, pas son numéro, qui peut apparaître par hasard ailleurs, par exemple dans la mémoire utilisée)
         bat.write_text(f"""@echo off
 chcp 65001 >nul
 :attente
-tasklist /FI "PID eq {pere}" | find "{pere}" >nul && (ping -n 2 127.0.0.1 >nul & goto attente)
+tasklist /FI "PID eq {pere}" /NH | find /I "{exe.name}" >nul && (ping -n 2 127.0.0.1 >nul & goto attente)
 set /a essais=0
 :copie
 move /y "{neuf}" "{exe}" >nul || (set /a essais+=1 & ping -n 2 127.0.0.1 >nul & if %essais% lss 20 goto copie)
