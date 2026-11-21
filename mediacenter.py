@@ -5,7 +5,7 @@ Usage :  python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musiq
 Les dossiers sont mémorisés dans mediacenter.json ; ensuite `python mediacenter.py` suffit.
 Affiches et résumés : TMDB si une clé est donnée (--tmdb CLE), sinon iTunes ; gardés dans mediacenter_cache.json.
 """
-import argparse, html, json, math, mimetypes, os, re, sys, threading, time, webbrowser
+import argparse, html, json, math, mimetypes, os, re, shutil, subprocess, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, quote
@@ -27,6 +27,12 @@ META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "serie:
 COVERS = {}  # dossier de musique -> image locale (cover.jpg…), ou morceau avec pochette intégrée, ou None
 IMG = {".jpg", ".jpeg", ".png", ".webp"}
 SUBS = {}  # chemin vidéo -> [fichiers .srt/.vtt]
+FFMPEG, FFPROBE = shutil.which("ffmpeg"), shutil.which("ffprobe")  # optionnels : sous-titres intégrés
+PISTES = {}  # chemin vidéo -> [(nom, n° de piste de sous-titres)] (intégrées, format texte)
+VTT = {}  # (chemin vidéo, n° de piste) -> WebVTT extrait  # ponytail: en mémoire, vidé au redémarrage
+TEXTE = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}  # PGS/VobSub = images : non convertibles
+LANGUES = {"fre": "Français", "fra": "Français", "fr": "Français", "eng": "Anglais", "en": "Anglais",
+           "spa": "Espagnol", "ger": "Allemand", "deu": "Allemand", "ita": "Italien", "por": "Portugais"}
 
 JUNK = re.compile(r"\b(2160p|1080p|720p|480p|4k|uhd|hdr|bluray|bdrip|brrip|webrip|web ?dl|web|hdtv|dvdrip|hdrip|"
                   r"x264|x265|h264|h265|hevc|10bit|aac|ac3|dts|truefrench|french|vff|vfq|vf|vostfr|multi|subfrench|"
@@ -187,6 +193,43 @@ def srt_vers_vtt(texte):
     return "WEBVTT\n\n" + texte
 
 
+def nom_piste(flux):
+    """Flux ffprobe -> 'Français – Forced'"""
+    tags = {k.lower(): v for k, v in flux.get("tags", {}).items()}
+    lang = tags.get("language", "")
+    return " – ".join(x for x in (LANGUES.get(lang, "" if lang == "und" else lang), tags.get("title", "")) if x) or "Intégrés"
+
+
+def pistes_integrees(chemin):
+    if not FFPROBE:
+        return []
+    if chemin not in PISTES:
+        try:
+            out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "s", "-show_entries",
+                                  "stream=codec_name:stream_tags=language,title", "-of", "json", chemin],
+                                 capture_output=True, timeout=30).stdout
+            flux = json.loads(out or b"{}").get("streams", [])
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            flux = []
+        PISTES[chemin] = [(nom_piste(f), i) for i, f in enumerate(flux) if f.get("codec_name") in TEXTE]
+    return PISTES[chemin]
+
+
+def extraire_vtt(chemin, piste):
+    if (chemin, piste) not in VTT:  # ffmpeg doit lire tout le fichier : quelques secondes sur un gros MKV
+        r = subprocess.run([FFMPEG, "-v", "error", "-i", chemin, "-map", f"0:s:{piste}", "-f", "webvtt", "-"],
+                           capture_output=True, timeout=600)
+        if r.returncode:
+            raise OSError(r.stderr.decode(errors="replace")[-300:])
+        VTT[chemin, piste] = r.stdout.decode("utf-8", errors="replace")
+    return VTT[chemin, piste]
+
+
+def noms_pistes(chemin):
+    """Toutes les pistes de sous-titres d'une vidéo : fichiers externes puis intégrées."""
+    return [nom_sous_titre(f, chemin) for f in SUBS.get(chemin, [])] + [n for n, _ in pistes_integrees(chemin)]
+
+
 def scan(dossiers):
     for kind, roots in dossiers.items():
         items = []
@@ -331,9 +374,6 @@ def suivi(chemin):
     e = SUIVI.get(Path(chemin).name, {})
     pct = min(100, int(100 * e["t"] / e["d"])) if e.get("t") and e.get("d") else 0
     attrs = f' data-pos="{e.get("t", 0)}"' + (' class="vu"' if e.get("vu") else "")
-    if SUBS.get(chemin):
-        noms = [nom_sous_titre(f, chemin) for f in SUBS[chemin]]
-        attrs += f' data-st="{html.escape(json.dumps(noms, ensure_ascii=False))}"'
     return attrs, (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + '<b class="ck" title="Vu / pas vu">✓</b>'
 
 
@@ -381,9 +421,10 @@ function play(i){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.
  if(vid&&last>5)p.addEventListener('loadedmetadata',()=>p.currentTime=last,{once:true});  // reprise
  p.src='/media/{kind}/'+l.dataset.id;
  p.querySelectorAll('track').forEach(t=>t.remove());
- const st=JSON.parse(l.dataset.st||'[]'),choix=Math.max(0,st.findIndex(lb=>/fr|vf/i.test(lb)));  // français de préférence
- st.forEach((lb,n)=>{const t=document.createElement('track');
-  Object.assign(t,{kind:'subtitles',label:lb,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});p.appendChild(t)});
+ if(vid)fetch('/pistes/{kind}/'+l.dataset.id).then(r=>r.json()).then(st=>{if(lis[cur]!==l)return;  // déjà passé à une autre vidéo
+  const choix=Math.max(0,st.findIndex(lb=>/fr|vf/i.test(lb)));  // français de préférence
+  st.forEach((lb,n)=>{const t=document.createElement('track');
+   Object.assign(t,{kind:'subtitles',label:lb,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});p.appendChild(t)})});
  p.play();
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
@@ -446,15 +487,22 @@ class Handler(BaseHTTPRequestHandler):
             if cover and Path(cover).suffix.lower() in EXT["musique"]:
                 return self.send_bytes(*(pochette_integree(cover) or (b"", "")))
             return self.send_file(cover)
-        m = re.fullmatch(r"/sub/(films|series)/(\d+)/(\d+)", url.path)
-        if m:
-            idx, n = int(m[2]), int(m[3])
-            subs = SUBS.get(LIB[m[1]][idx][2], []) if idx < len(LIB[m[1]]) else []
-            if n >= len(subs):
-                return self.send_error(404)
+        m = re.fullmatch(r"/(pistes|sub)/(films|series)/(\d+)(?:/(\d+))?", url.path)
+        if m and int(m[3]) < len(LIB[m[2]]) and (m[1] == "sub") == bool(m[4]):
+            chemin = LIB[m[2]][int(m[3])][2]
+            if m[1] == "pistes":
+                return self.send_bytes(json.dumps(noms_pistes(chemin), ensure_ascii=False).encode(),
+                                       "application/json")
+            n, ext, integ = int(m[4]), SUBS.get(chemin, []), pistes_integrees(chemin)
             try:
-                vtt = srt_vers_vtt(lire_texte(subs[n]))
-            except OSError:
+                if n < len(ext):
+                    vtt = srt_vers_vtt(lire_texte(ext[n]))
+                elif n - len(ext) < len(integ):
+                    vtt = extraire_vtt(chemin, integ[n - len(ext)][1])
+                else:
+                    return self.send_error(404)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                print(f"⚠ Sous-titres illisibles ({Path(chemin).name}) : {e}")
                 return self.send_error(404)
             return self.send_bytes(vtt.encode(), "text/vtt; charset=utf-8")
         if url.path != "/":
@@ -586,6 +634,8 @@ def main():
         SUIVI.update(json.loads(SUIVI_F.read_text("utf-8")))
     scan(dossiers)
     print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés.")
+    if not (FFMPEG and FFPROBE) and any(c.lower().endswith(".mkv") for k in ("films", "series") for _, _, c in LIB[k]):
+        print("ℹ Pour les sous-titres intégrés aux MKV, installe ffmpeg (Windows : winget install ffmpeg) puis relance.")
     if not a.hors_ligne:
         threading.Thread(target=enrichir, args=(cfg.get("tmdb"),), daemon=True).start()
     host = "0.0.0.0" if a.reseau else "127.0.0.1"

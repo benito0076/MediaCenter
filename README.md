@@ -30,6 +30,12 @@ Films et épisodes reprennent là où tu les as arrêtés (barre rouge sous le t
 ## Sous-titres
 Les fichiers `.srt` / `.vtt` sont détectés automatiquement : même nom que la vidéo (`Film.2020.srt`, `Film.2020.fr.srt`, `Film.2020.en.srt`) ou, si la vidéo est seule dans son dossier, tout `.srt` du dossier et d'un sous-dossier `Subs/`. Le français est activé par défaut ; change de langue ou coupe-les avec le bouton du lecteur (⋮ → Sous-titres, ou CC). Les accents des vieux `.srt` (Windows-1252) sont gérés.
 
+**Sous-titres intégrés aux MKV** (et MP4) : installer [ffmpeg](https://ffmpeg.org) une fois, puis relancer :
+```
+winget install ffmpeg
+```
+Les pistes texte (SRT, ASS, …) apparaissent alors dans le menu sous-titres (« Français », « Anglais – SDH »…). Elles mettent quelques secondes à s'afficher la première fois (ffmpeg lit le fichier). Les sous-titres en image (PGS des Blu-ray, VobSub des DVD) ne peuvent pas être affichés par le navigateur.
+
 ## Pochettes d'albums
 Pour chaque dossier d'album, le Media Center utilise l'image présente dans le dossier (`cover.jpg`, `folder.jpg`, `front.png`… sinon la première image trouvée). À défaut, il prend la pochette intégrée aux fichiers (MP3, FLAC, M4A). S'il n'y en a toujours pas, il cherche la pochette sur iTunes d'après le nom du dossier (`Artiste - Album` ou `Artiste/Album`), en arrière-plan, et la mémorise dans `mediacenter_cache.json`.
 

@@ -1,5 +1,5 @@
 """python test_mediacenter.py"""
-from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode, maj_suivi, srt_vers_vtt, lire_texte, sous_titres, nom_sous_titre
+from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode, maj_suivi, srt_vers_vtt, lire_texte, sous_titres, nom_sous_titre, nom_piste
 import os, tempfile
 
 assert nettoyer("Le.Film.2024.1080p.x264-GRP") == ("Le Film", "2024")
@@ -73,4 +73,14 @@ with tempfile.TemporaryDirectory() as d:
     (D / "a.srt").write_bytes("Déjà vu".encode("cp1252")); assert lire_texte(D / "a.srt") == "Déjà vu"
     (D / "b.srt").write_bytes("Déjà vu".encode("utf-8-sig")); assert lire_texte(D / "b.srt") == "Déjà vu"
     (D / "c.srt").write_bytes("Déjà vu".encode("utf-16")); assert lire_texte(D / "c.srt") == "Déjà vu"
+
+assert nom_piste({"tags": {"language": "fre", "title": "Forced"}}) == "Français – Forced"
+assert nom_piste({"tags": {"LANGUAGE": "eng"}}) == "Anglais"
+assert nom_piste({"tags": {"language": "und"}}) == "Intégrés"
+assert nom_piste({}) == "Intégrés"
+
+# Sans ffmpeg installé : pas de pistes intégrées, pas d'erreur.
+import mediacenter
+mediacenter.FFPROBE = None
+assert mediacenter.pistes_integrees("film.mkv") == []
 print("OK")
