@@ -1,6 +1,6 @@
 """python test_mediacenter.py"""
 from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode, maj_suivi, vers_vtt, lire_texte, sous_titres, nom_sous_titre, nom_piste
-import os, tempfile
+import os, tempfile, time
 
 assert nettoyer("Le.Film.2024.1080p.x264-GRP") == ("Le Film", "2024")
 assert nettoyer("Inception (2010) [MULTI] 1080p") == ("Inception", "2010")
@@ -250,4 +250,16 @@ with tempfile.TemporaryDirectory() as d:
     e1 = next(i for i, x in enumerate(mediacenter.LIB["series"]) if x[0] == "S01E01")
     e2 = next(i for i, x in enumerate(mediacenter.LIB["series"]) if x[0] == "S01E02")
     assert mediacenter.episode_suivant("series", e1) == e2 and mediacenter.episode_suivant("series", e2) is None
+with tempfile.TemporaryDirectory() as d:
+    ancien, mediacenter.POLICES_DIR = mediacenter.POLICES_DIR, Path(d)
+    try:
+        for nom, age in (("vieux", 90), ("recent", 5)):
+            (Path(d) / nom).mkdir()
+            (Path(d) / nom / "0.ttf").write_bytes(b"x")
+            t = time.time() - age * 86400
+            os.utime(Path(d) / nom, (t, t))
+        mediacenter.nettoyer_polices()
+        assert [x.name for x in Path(d).iterdir()] == ["recent"]
+    finally:
+        mediacenter.POLICES_DIR = ancien
 print("OK")

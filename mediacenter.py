@@ -472,6 +472,16 @@ def commande_mpv(c):
         PILOTE.update(id=i, titre=titre_lib(PILOTE["kind"], i))
 
 
+def nettoyer_polices(jours=60):
+    """Supprime les polices extraites des MKV qui n'ont pas servi depuis `jours` jours."""
+    if not POLICES_DIR.is_dir():
+        return
+    limite = time.time() - jours * 86400
+    for d in POLICES_DIR.iterdir():
+        if d.is_dir() and d.stat().st_mtime < limite:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def nom_canaux(n):
     return {3: "2.1", 4: "4.0", 5: "5.0", 6: "5.1", 7: "6.1", 8: "7.1"}.get(n, f"{n} canaux")
 
@@ -621,6 +631,7 @@ def polices(chemin):
                 # ffmpeg finit en erreur « aucune sortie » après l'extraction : normal, on regarde les fichiers.
             if jointes and dest.is_dir():
                 res += sorted(str(f) for f in dest.iterdir())
+                os.utime(dest)  # date de dernière utilisation (nettoyage au bout de 60 jours)
         except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
             print(f"⚠ Polices non extraites ({v.name}) : {e}")
     POLICES[chemin] = res
@@ -888,7 +899,8 @@ li:hover,li.on{background:#222}small{color:#888;margin-left:8px}
 ul.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:16px}
 ul.grid li{border:0;padding:6px;border-radius:8px}ul.grid small{display:block;margin:0}
 [hidden]{display:none!important}
-li{position:relative}.bar{position:absolute;left:0;bottom:0;height:3px;background:#e50914}
+li{position:relative;content-visibility:auto;contain-intrinsic-size:auto 68px}  /* lignes hors écran non dessinées */
+ul.grid li{contain-intrinsic-size:auto 300px}.bar{position:absolute;left:0;bottom:0;height:3px;background:#e50914}
 .ck{margin-left:auto;padding:0 8px;opacity:.25;cursor:pointer}li.vu .ck{opacity:1;color:#4caf50}li.vu{color:#999}
 ul.grid .ck{position:absolute;top:12px;right:12px;background:#000b;border-radius:50%;padding:2px 7px}
 ul:not(.grid) li{display:flex;align-items:center;gap:12px}
@@ -1128,7 +1140,8 @@ if(al){document.getElementById('sv').onclick=sv2;  // marche aussi en « Répét
  document.getElementById('pv').onclick=pv2;
  try{navigator.mediaSession.setActionHandler('nexttrack',sv2);navigator.mediaSession.setActionHandler('previoustrack',pv2)}
  catch(e){}}  // touches ⏮ ⏭ du clavier / casque
-q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
+const txt=lis.map(l=>l.textContent.toLowerCase());  // préparé une fois : recherche rapide même avec 10 000 morceaux
+q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach((l,i)=>l.hidden=!txt[i].includes(s))};
 </script></html>"""
 
 
@@ -1526,6 +1539,7 @@ def main():
         print(f"⚠ Lecteur externe introuvable : {cfg['lecteur_externe']}")
     CACHE_AUDIO_MAX[0] = int(max(0.1, cfg.get("cache_audio") or 5) * 1024 ** 3)
     nettoyer_cache_audio(CACHE_AUDIO_MAX[0], demarrage=True)
+    nettoyer_polices()
     scan(dossiers)
     print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés.")
     if not (FFMPEG and FFPROBE) and any(c.lower().endswith(".mkv") for k in ("films", "series") for _, _, c in LIB[k]):
