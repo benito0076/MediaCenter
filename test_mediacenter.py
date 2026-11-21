@@ -365,4 +365,14 @@ assert mediacenter.lire_release({"tag_name": "build-42", "html_url": "https://x/
 assert mediacenter.lire_release({}) == (0, "", None)
 assert "1.ts?mc=abc" in mediacenter.playlist_hls(10, "?mc=abc")
 assert mediacenter.ip_lan() == "" or mediacenter.ip_lan().count(".") == 3
+# Diagnostic : ne plante jamais, même sans internet ni dossiers
+m.CFG.clear()
+d = m.diagnostic(complet=False)
+assert any(x[1] == "Dossiers" and x[0] == "❌" for x in d) and any(x[1] == "ffmpeg" for x in d)
+with tempfile.TemporaryDirectory() as dd:
+    m.CFG.update(films=[dd, dd + "/absent"])
+    d = m.diagnostic(complet=False)
+    assert [x[0] for x in d if x[1] == "Dossier Films"] == ["✅", "❌"]
+m.CFG.clear()
+assert m.tester_url("http://127.0.0.1:9/") != "ok"
 print("OK")

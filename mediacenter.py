@@ -53,6 +53,7 @@ AUDIO_DIR = BASE / "audio_cache"  # pistes audio converties pour le navigateur (
 ACCES = {"jeton": None}  # PIN pour les autres appareils (--pin) : jeton attendu dans le cookie « mc »
 ECHECS = {}  # adresse -> [nombre d'erreurs de PIN, heure de la première]
 AJOUT = {}  # chemin -> date du fichier (téléchargement)
+CFG = {}  # réglages chargés au démarrage (pour la page de diagnostic)
 RESCAN = [lambda: 0]  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
@@ -107,7 +108,17 @@ ES = {
     "Premier lancement : choisis tes dossiers de films, de séries et de musique.\n(Annuler pour passer un dossier.)":
         "Primer inicio: elige tus carpetas de películas, series y música.\n(Cancelar para omitir una carpeta.)",
     "Dossier de films": "Carpeta de películas", "Dossier de séries TV": "Carpeta de series", "Dossier de musique": "Carpeta de música",
-    "Langue : Español": "Idioma: Français", "Nouveau profil…": "Nuevo perfil…", "Profil": "Perfil",
+    "Langue : Español": "Idioma: Français", 
+    "lancé avec Python (pas de mise à jour automatique)": "lanzado con Python (sin actualización automática)",
+    "Mise à jour": "Actualización", "version disponible": "versión disponible", 
+    "aucun dossier configuré": "ninguna carpeta configurada",
+    "absent : vidéos AVI/HEVC, pistes et sous-titres des MKV, son AC3/DTS indisponibles":
+        "falta: vídeos AVI/HEVC, pistas y subtítulos de los MKV y sonido AC3/DTS no disponibles",
+    "Lecteur pour l'ampli": "Reproductor para el amplificador", "ni mpv ni VLC : pas de passthrough": "ni mpv ni VLC: sin passthrough",
+    "clé acceptée": "clave aceptada", "clé refusée": "clave rechazada", 
+    "Mises à jour (GitHub)": "Actualizaciones (GitHub)", 
+    "seulement ce PC (lancer avec --reseau pour la TV et le téléphone)": "solo este PC (lanzar con --reseau para la TV y el teléfono)",
+    "Cache audio": "Caché de audio", "Nouveau profil…": "Nuevo perfil…", "Profil": "Perfil",
     "Nom du nouveau profil :": "Nombre del nuevo perfil:", "Manque :": "Falta:", "Installer": "Instalar",
     "Télécharger": "Descargar", "ffmpeg (vidéos AVI/HEVC, sous-titres et pistes audio des MKV, son AC3/DTS)":
         "ffmpeg (vídeos AVI/HEVC, subtítulos y pistas de audio de los MKV, sonido AC3/DTS)",
@@ -122,7 +133,8 @@ ES = {
 # dans le JavaScript, « Action » est dans setActionHandler…).
 MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus": "vistos", "Français": "Francés",
            "Anglais": "Inglés", "Espagnol": "Español", "Allemand": "Alemán", "Italien": "Italiano", "Portugais": "Portugués",
-           "Intégrés": "Integrados", "Piste": "Pista", "Sous-titres": "Subtítulos"}
+           "Intégrés": "Integrados", "Piste": "Pista", "Sous-titres": "Subtítulos",
+           "Diagnostic": "Diagnóstico", "Version": "Versión", "Dossier": "Carpeta", "fichiers": "archivos", "introuvable": "no encontrada", "Dossiers": "Carpetas", "Affiches": "Pósters", "injoignable": "inaccesible", "joignable": "accesible", "Réseau": "Red", "activé": "activado", "aucun": "ninguno", "Films": "Películas", "Séries": "Series", "Musique": "Música"}
 _MOTIF_ES = re.compile("|".join(re.escape(k) for k in sorted(ES, key=len, reverse=True)))
 
 
@@ -944,6 +956,60 @@ del "%~f0"
         MAJ["etat"] = f"erreur : {e}"
 
 
+def tester_url(url, entetes=None):
+    """« ok », ou la raison de l'échec (pour le diagnostic)."""
+    try:
+        with urlopen(Request(url, headers={"User-Agent": "MediaCenter", **(entetes or {})}), timeout=6) as r:
+            r.read(200)
+        return "ok"
+    except HTTPError as e:
+        return f"HTTP {e.code}"
+    except (OSError, ValueError) as e:
+        return str(getattr(e, "reason", e))[:120]
+
+
+def diagnostic(complet=True):
+    """[(état, sujet, détail)] : ✅ bon, ⚠ à voir, ❌ problème. complet : tests réseau (internet) compris."""
+    L = [("✅" if VERSION else "ℹ️", tr("Version"), f"build {VERSION}" if VERSION else tr("lancé avec Python (pas de mise à jour automatique)"))]
+    if VERSION and MAJ.get("version"):
+        L.append(("⚠️", tr("Mise à jour"), f'{tr("version disponible")} : build {MAJ["version"]}'))
+    for k, nom in (("films", "Films"), ("series", "Séries"), ("musique", "Musique")):
+        for d in CFG.get(k, []):
+            ok = Path(d).is_dir()
+            n = sum(1 for _t, _d, c in LIB[k] if c.startswith(str(Path(d))))
+            L.append(("✅" if ok else "❌", f'{tr("Dossier")} {tr(nom)}', f"{d} — {n} {tr('fichiers')}" if ok else f"{d} : {tr('introuvable')}"))
+    if not any(CFG.get(k) for k in LIB):
+        L.append(("❌", tr("Dossiers"), tr("aucun dossier configuré")))
+    L.append(("✅" if FFMPEG and FFPROBE else "⚠️", "ffmpeg", FFMPEG or tr("absent : vidéos AVI/HEVC, pistes et sous-titres des MKV, son AC3/DTS indisponibles")))
+    L.append(("✅" if LECTEUR[0] else "⚠️", tr("Lecteur pour l'ampli"), LECTEUR[0] or tr("ni mpv ni VLC : pas de passthrough")))
+    fiches = [Path(c).name for _t, _d, c in LIB["films"]] + ["serie:" + d for d in {d for _t, d, _c in LIB["series"]}]
+    avec = sum(1 for f in fiches if (META.get(f) or {}).get("affiche"))
+    if fiches:
+        L.append(("✅" if avec == len(fiches) else "⚠️", tr("Affiches"), f"{avec} / {len(fiches)}"))
+    if complet:
+        cle = CFG.get("tmdb")
+        if cle:
+            ent = {"Authorization": "Bearer " + cle} if cle.startswith("eyJ") else {}
+            r = tester_url("https://api.themoviedb.org/3/configuration" + ("" if ent else "?api_key=" + quote(cle)), ent)
+            L.append(("✅" if r == "ok" else "❌", "TMDB", tr("clé acceptée") if r == "ok" else
+                      (tr("clé refusée") if r == "HTTP 401" else f'{tr("injoignable")} ({r})')))
+        else:
+            r = tester_url("https://itunes.apple.com/search?term=avatar&media=movie&limit=1")
+            L.append(("✅" if r == "ok" else "❌", "iTunes", tr("joignable") if r == "ok" else f'{tr("injoignable")} ({r})'))
+        if VERSION:
+            r = tester_url(URL_MAJ)
+            L.append(("✅" if r == "ok" else "⚠️", tr("Mises à jour (GitHub)"), tr("joignable") if r == "ok" else f'{tr("injoignable")} ({r})'))
+    L.append(("✅" if RESEAU[0] else "ℹ️", tr("Réseau"), f"http://{ip_lan()}:{PORT[0]}" if RESEAU[0] else tr("seulement ce PC (lancer avec --reseau pour la TV et le téléphone)")))
+    L.append(("✅" if ACCES["jeton"] else ("⚠️" if RESEAU[0] else "ℹ️"), tr("Code d'accès"), tr("activé") if ACCES["jeton"] else tr("aucun")))
+    L.append(("ℹ️", tr("Cache audio"), f"{taille_cache_audio() / 1e6:.0f} Mo / {CACHE_AUDIO_MAX[0] / 1e9:.0f} Go"))
+    return L
+
+
+def html_diagnostic(sur_le_pc):
+    lignes = "".join(f"<tr><td>{e}</td><td>{html.escape(s)}</td><td>{html.escape(str(d))}</td></tr>" for e, s, d in diagnostic())
+    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>'
+
+
 def bandeau_maj():
     if not MAJ.get("version"):
         return ""
@@ -1599,6 +1665,8 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/cast/(films|series)/(\d+)", url.path)
         if m and int(m[2]) < len(LIB[m[1]]):
             return self.send_bytes(json.dumps(infos_cast(m[1], int(m[2]))).encode(), "application/json")
+        if url.path == "/diagnostic":
+            return self.page_simple(html_diagnostic(self.client_address[0] in ("127.0.0.1", "::1")))
         if url.path == "/maj-etat":
             return self.send_bytes(json.dumps({"etat": MAJ.get("etat", "")}).encode(), "application/json")
         if url.path == "/installer-etat":
@@ -1674,12 +1742,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def page_accueil(self):
-        body = gabarit()[:gabarit().index("<main>")].replace("{accueil}", "on").replace("{profils}", html_profils())
+        outils = bandeau_outils() if self.client_address[0] in ("127.0.0.1", "::1") else ""
+        return self.page_simple(outils + html_accueil(), "accueil")
+
+    def page_simple(self, contenu, onglet="", script=""):
+        """Page sans lecteur (accueil, diagnostic) : en-tête commun + contenu."""
+        body = gabarit()[:gabarit().index("<main>")].replace("{accueil}", "on" if onglet == "accueil" else "")
+        body = body.replace("{profils}", html_profils())
         for k in LIB:
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "").replace("{n" + k + "}", str(n))
-        outils = bandeau_outils() if self.client_address[0] in ("127.0.0.1", "::1") else ""
-        body = (body + "<main>" + outils + html_accueil() + """</main><script>
+        body = (body + "<main>" + contenu + "</main><script>" + script + """
 const cartes=[...document.querySelectorAll('.carte')];
 q.oninput=()=>{const s=q.value.toLowerCase();cartes.forEach(c=>c.hidden=!c.textContent.toLowerCase().includes(s))};
 document.getElementById('rs').onclick=async()=>{await fetch('/rescan',{method:'POST'});location.reload()};
@@ -1978,6 +2051,7 @@ def main():
     if any(nouveau.values()):
         cfg.update({k: v for k, v in nouveau.items() if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+    CFG.update(cfg)
     LANGUE[0] = cfg.get("langue") or langue_systeme()
     PROFILS[:] = [p for p in cfg.get("profils", []) if isinstance(p, str)]
     dossiers = {k: cfg.get(k, []) for k in LIB}
