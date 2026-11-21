@@ -153,4 +153,20 @@ for mauvais in ({**v, "kind": "musique"}, {**v, "id": -1}, {**v, "t": float("inf
         raise AssertionError(mauvais)
     except (ValueError, TypeError):
         pass
+assert mediacenter.valider_commande({"cmd": "soustitres", "v": -1})["v"] == -1
+assert mediacenter.valider_commande({"cmd": "soustitres", "v": 2})["v"] == 2
+for mauvais in ({"cmd": "soustitres", "v": 1.5}, {"cmd": "soustitres", "v": -2}):
+    try:
+        mediacenter.valider_commande(mauvais)
+        raise AssertionError(mauvais)
+    except ValueError:
+        pass
+v = mediacenter.valider_video({"kind": "films", "id": 0, "titre": "Dune", "t": 1, "lecture": True, "st": ["fr", "en"], "sti": 1})
+assert (v["st"], v["sti"]) == (["fr", "en"], 1)
+for mauvais in ({**v, "sti": 2}, {**v, "st": [1]}, {**v, "st": "fr"}):
+    try:
+        mediacenter.valider_video(mauvais)
+        raise AssertionError(mauvais)
+    except (ValueError, TypeError):
+        pass
 print("OK")

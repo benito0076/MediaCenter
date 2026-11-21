@@ -21,7 +21,7 @@ ENCOURS_F = Path(__file__).with_name("mediacenter_encours.json")
 ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "dev", "quand"}
 COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
 RELEVE = {}  # id d'appareil -> heure du dernier relevé de commandes (= page ouverte, joignable)
-ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer", "volume", "deplacer"}
+ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer", "volume", "deplacer", "soustitres"}
 VIDEO = {}  # film/épisode en cours (pour la télécommande) : {"kind", "id", "titre", "t", "d", "lecture", "vol", "page", "dev", "quand"}
 SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
 VERROU = threading.Lock()
@@ -485,7 +485,8 @@ def valider_commande(data):
     """{"cmd": ordre, "k": clé du morceau (« jouer »), "v": volume 0–1 (« volume »)} de la télécommande, ou ValueError."""
     cmd, k, v = data["cmd"], data.get("k", ""), float(data.get("v", 0))
     if (cmd not in ORDRES or not isinstance(k, str) or len(k) >= 2000 or (cmd == "jouer" and not k)
-            or not (-3600 <= v <= 3600 if cmd == "deplacer" else 0 <= v <= 1)):  # NaN refusé aussi ; deplacer : secondes
+            or not (-3600 <= v <= 3600 if cmd == "deplacer" else v in range(-1, 100) if cmd == "soustitres"
+                    else 0 <= v <= 1)):  # NaN refusé aussi ; deplacer : secondes ; soustitres : n° de piste, -1 = aucun
         raise ValueError("commande invalide")
     return {"cmd": cmd, "k": k, "v": v}
 
@@ -493,10 +494,13 @@ def valider_commande(data):
 def valider_video(data):
     """État du lecteur vidéo envoyé par l'appareil qui joue un film/épisode, ou ValueError."""
     v = {"kind": data["kind"], "id": int(data["id"]), "titre": data["titre"], "t": float(data["t"]), "d": float(data.get("d") or 0),
-         "lecture": data["lecture"], "vol": float(data.get("vol", 1)), "page": data.get("page", ""), "dev": data.get("dev", "")}
+         "lecture": data["lecture"], "vol": float(data.get("vol", 1)), "page": data.get("page", ""), "dev": data.get("dev", ""),
+         "st": data.get("st", []), "sti": data.get("sti", -1)}  # sous-titres : noms des pistes, n° de celle affichée (-1 = aucune)
     if not (v["kind"] in ("films", "series") and v["id"] >= 0 and isinstance(v["titre"], str) and len(v["titre"]) < 500
             and all(math.isfinite(v[x]) and 0 <= v[x] < 1e6 for x in ("t", "d")) and isinstance(v["lecture"], bool)
-            and 0 <= v["vol"] <= 1 and all(isinstance(v[x], str) and len(v[x]) < 500 for x in ("page", "dev"))):
+            and 0 <= v["vol"] <= 1 and all(isinstance(v[x], str) and len(v[x]) < 500 for x in ("page", "dev"))
+            and isinstance(v["st"], list) and len(v["st"]) < 50 and all(isinstance(x, str) and len(x) < 200 for x in v["st"])
+            and v["sti"] in range(-1, len(v["st"]))):
         raise ValueError("état vidéo invalide")
     return {**v, "t": round(v["t"], 1), "quand": time.time()}
 
@@ -547,6 +551,7 @@ ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;fon
 .qn+.qa{margin-left:0}.qn,.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qn:hover,.qa:hover,.fi button:hover{color:#fff}
 #vt{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#vt label{white-space:nowrap}
 #vtv{vertical-align:middle;width:140px;accent-color:#e50914}
+#vts{background:#2a2a2a;color:#eee;border:0;border-radius:6px;padding:4px 6px;max-width:200px}
 #tc{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#tc .bt{font-size:18px}#tc label{white-space:nowrap}#tcv{vertical-align:middle;width:140px;accent-color:#e50914}
 #fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
 .fi{display:flex;align-items:center;padding:6px 0;cursor:grab;border-top:1px solid #262626}.fi:hover{color:#fff}
@@ -612,23 +617,32 @@ if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
  const vt=document.getElementById('vt'),vtpp=document.getElementById('vtpp'),vtv=document.getElementById('vtv'),
   hms=s=>{s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s/60)%60;return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(s%60).padStart(2,'0')};
  window.etatVideo=()=>{if(!vproprio||cur<0)return;navigator.sendBeacon('/video',JSON.stringify({kind:'{kind}',id:+lis[cur].dataset.id,
-  titre:lis[cur].dataset.t,t:p.currentTime||0,d:p.duration||0,lecture:!p.paused,vol:p.volume,page:location.search,dev:APPAREIL}))};
+  titre:lis[cur].dataset.t,t:p.currentTime||0,d:p.duration||0,lecture:!p.paused,vol:p.volume,page:location.search,dev:APPAREIL,
+  st:[...p.textTracks].map(t=>t.label),sti:[...p.textTracks].findIndex(t=>t.mode==='showing')}))};
+ p.textTracks.addEventListener('change',()=>etatVideo());p.textTracks.addEventListener('addtrack',()=>setTimeout(etatVideo,400));
  p.addEventListener('play',()=>{vproprio=true;etatVideo()});for(const ev of ['pause','seeked','loadedmetadata'])p.addEventListener(ev,()=>etatVideo());  // loadedmetadata : durée connue
  p.addEventListener('volumechange',()=>{clearTimeout(volV);volV=setTimeout(etatVideo,300)});
  setInterval(async()=>{if(!vproprio)return;try{for(const c of await (await fetch('/commande?dev='+APPAREIL)).json()){
   if(c.cmd==='lecture')p.play().catch(()=>{});else if(c.cmd==='pause')p.pause();else if(c.cmd==='volume')p.volume=c.v;
   else if(c.cmd==='deplacer')p.currentTime=Math.max(0,Math.min(p.duration||1e9,p.currentTime+c.v));
+  else if(c.cmd==='soustitres')[...p.textTracks].forEach((t,j)=>t.mode=j===c.v?'showing':'disabled');  // déclenche aussi le rendu .ass
   else if(c.cmd==='suivant')suivant();else if(c.cmd==='jouer'){const i=lis.findIndex(l=>l.dataset.id===c.k);if(i>=0)play(i)}}}catch(e){}},1000);
  vt.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>commande('deplacer','','video',+b.dataset.v));
  const vtsv=document.getElementById('vtsv');if(vtsv)vtsv.onclick=()=>commande('suivant','','video');
  const envoyerVolV=()=>{vtTouche=Date.now();if(Date.now()-vtEnvoi>200){vtEnvoi=Date.now();commande('volume','','video',vtv.value/100)}};
  vtv.oninput=envoyerVolV;vtv.onchange=()=>{vtEnvoi=0;envoyerVolV()};
+ const vts=document.getElementById('vts'),vtsl=document.getElementById('vtsl');let vtsListe='',vtsTouche=0;
+ vts.onchange=()=>{vtsTouche=Date.now();commande('soustitres','','video',+vts.value)};
  async function suivreVideo(){try{const e=await (await fetch('/video?dev='+APPAREIL)).json();
   const visible=!!(e.titre&&!e.moi&&e.joignable&&p.paused);vt.hidden=!visible;vdistant=visible&&e.page===location.search&&e.kind==='{kind}';
   if(!visible)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);
   document.getElementById('vtt').textContent='Sur un autre appareil : '+e.titre+' — '+hms(Math.min(t,e.d||t))+(e.d?' / '+hms(e.d):'')+(e.lecture?'':' (pause)');
   vtpp.textContent=e.lecture?'⏸':'▶';vtpp.onclick=()=>commande(e.lecture?'pause':'lecture','','video');
-  if(Date.now()-vtTouche>3000)vtv.value=Math.round((e.vol??1)*100)}catch(e){}}
+  if(Date.now()-vtTouche>3000)vtv.value=Math.round((e.vol??1)*100);
+  const st=e.st||[],cle=JSON.stringify(st);vtsl.hidden=!st.length;
+  if(cle!==vtsListe){vtsListe=cle;vts.replaceChildren(...[['-1','Sans sous-titres'],...st.map((n,j)=>[String(j),n])].map(([v,n])=>{
+   const o=document.createElement('option');o.value=v;o.textContent=n;return o}))}
+  if(Date.now()-vtsTouche>3000)vts.value=String(e.sti??-1)}catch(e){}}
  suivreVideo();setInterval(suivreVideo,2000)}
 // Musique : aléatoire (chaque morceau visible une fois) ; bouton répéter : non → tout → un seul morceau → non.
 const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=0,joues=new Set(),hist=[];  // hist : morceaux joués en aléatoire, pour « précédent »
@@ -841,7 +855,8 @@ class Handler(BaseHTTPRequestHandler):
             '<div id="vt" hidden>🎛 <span id="vtt"></span><br><button class="bt" data-v="-10" aria-label="Reculer de 10 secondes">⏪ 10 s</button>'
             '<button class="bt" id="vtpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-v="30" aria-label="Avancer de 30 secondes">30 s ⏩</button>'
             + ('<button class="bt" id="vtsv" aria-label="Épisode suivant (à distance)">⏭ Épisode suivant</button>' if kind == "series" else "")
-            + ' <label>🔊 <input id="vtv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label></div>')
+            + ' <label>🔊 <input id="vtv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label>'
+            ' <label id="vtsl" hidden>💬 <select id="vts" aria-label="Sous-titres (à distance)"></select></label></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
