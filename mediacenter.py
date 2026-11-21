@@ -19,7 +19,9 @@ EXT = {
     "musique": {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".opus", ".aac"},
 }
 LIB = {"films": [], "musique": []}  # chaque entrée : (titre, sous-dossier, chemin absolu)
-META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; {} = introuvable
+META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "album:<dossier>" -> {"affiche"} ; {} = introuvable
+COVERS = {}  # dossier de musique -> image locale (cover.jpg, folder.jpg…) ou None
+IMG = {".jpg", ".jpeg", ".png", ".webp"}
 
 JUNK = re.compile(r"\b(2160p|1080p|720p|480p|4k|uhd|hdr|bluray|bdrip|brrip|webrip|web ?dl|web|hdtv|dvdrip|hdrip|"
                   r"x264|x265|h264|h265|hevc|10bit|aac|ac3|dts|truefrench|french|vff|vfq|vf|vostfr|multi|subfrench|"
@@ -36,6 +38,23 @@ def nettoyer(stem):
     return re.sub(r"\s+", " ", JUNK.sub("", s)).strip(" -()"), annee
 
 
+ALBUM_JUNK = re.compile(r"\b(flac|mp3|aac|alac|\d+ ?kbps|320|256|192|v0|web|cd|24 ?bit|16 ?bit|\d+(\.\d+)? ?khz|"
+                        r"hi ?res|lossless|remaster(ed)?|deluxe|edition)\b", re.I)
+
+
+def nettoyer_album(dossier):
+    """'Daft Punk - Discovery (2001) [FLAC]/CD1' -> 'Daft Punk Discovery'"""
+    parts = [x for x in re.split(r"[\\/]", dossier) if not re.fullmatch(r"\s*(cd|disc|disque) ?\d+\s*", x, re.I)]
+    s = re.sub(r"\[.*?\]|\(.*?\)|\{.*?\}", " ", " ".join(parts[-2:]))  # ponytail: 2 derniers niveaux = Artiste/Album
+    return re.sub(r"\s+", " ", ALBUM_JUNK.sub(" ", re.sub(r"[._\-]+", " ", s))).strip()
+
+
+def pochette_locale(dossier):
+    imgs = sorted(f for f in dossier.iterdir() if f.suffix.lower() in IMG and f.is_file())
+    pref = [f for f in imgs if re.match(r"(cover|folder|front|album)", f.stem, re.I)]
+    return str((pref or imgs)[0]) if imgs else None
+
+
 def scan(dossiers):
     for kind, roots in dossiers.items():
         items = []
@@ -46,6 +65,8 @@ def scan(dossiers):
                     titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
                     dossier = str(p.parent.relative_to(root))
                     items.append((titre or p.stem, "" if dossier == "." else dossier, str(p)))
+                    if kind == "musique" and str(p.parent) not in COVERS:
+                        COVERS[str(p.parent)] = pochette_locale(p.parent)
         LIB[kind] = sorted(items, key=lambda i: (i[1].lower(), i[0].lower()))
 
 
@@ -87,6 +108,17 @@ def chercher_tmdb(titre, annee, cle):
         return choisir_tmdb(json.load(r).get("results", []), annee)
 
 
+def chercher_album(terme):
+    q = urlencode({"term": terme, "media": "music", "entity": "album", "country": "fr", "limit": 1})
+    with urlopen("https://itunes.apple.com/search?" + q, timeout=10) as r:
+        res = json.load(r).get("results", [])
+    return {"affiche": res[0].get("artworkUrl100", "").replace("100x100", "600x600")} if res else {}
+
+
+def sauver():
+    CACHE.write_text(json.dumps(META, ensure_ascii=False), "utf-8")
+
+
 def enrichir(cle=None):
     films = [Path(p) for _, _, p in LIB["films"]]
     # Avec TMDB, on repasse aussi sur les films trouvés (ou pas) par iTunes.
@@ -98,7 +130,8 @@ def enrichir(cle=None):
             info = chercher_tmdb(*nettoyer(p.stem), cle) if cle else chercher_itunes(*nettoyer(p.stem))
         except HTTPError as e:
             if e.code == 401:
-                return print("⚠ Clé TMDB refusée : vérifie-la (python mediacenter.py --tmdb CLE)")
+                print("⚠ Clé TMDB refusée : vérifie-la (python mediacenter.py --tmdb CLE)")
+                break
             print(f"⚠ Affiche non récupérée pour {p.name} : {e}")
             continue
         except (OSError, ValueError) as e:  # pas d'internet : on réessaiera au prochain lancement
@@ -106,8 +139,22 @@ def enrichir(cle=None):
             continue
         # TMDB n'a rien trouvé : on garde ce qu'iTunes avait, marqué comme déjà tenté.
         META[p.name] = info or ({**META.get(p.name, {}), "source": "tmdb"} if cle else {})
-        CACHE.write_text(json.dumps(META, ensure_ascii=False), "utf-8")
+        sauver()
         time.sleep(0.1 if cle else 3)  # ponytail: iTunes limite à ~20 requêtes/min ; 1re fois lente si grosse collection
+
+    # Albums sans image locale : pochette iTunes d'après le nom du dossier.
+    albums = sorted({d for _, d, c in LIB["musique"] if d and not COVERS.get(str(Path(c).parent))
+                     and "album:" + d not in META})
+    if albums:
+        print(f"Recherche des pochettes pour {len(albums)} albums (en arrière-plan)…")
+    for d in albums:
+        try:
+            META["album:" + d] = chercher_album(nettoyer_album(d))
+        except (OSError, ValueError) as e:
+            print(f"⚠ Pochette non récupérée pour {d} : {e}")
+            continue
+        sauver()
+        time.sleep(3)
 
 
 PAGE = """<!doctype html><html lang="fr"><meta charset="utf-8">
@@ -123,6 +170,10 @@ ul{list-style:none;padding:0}li{padding:10px;border-bottom:1px solid #222;cursor
 li:hover,li.on{background:#222}small{color:#888;margin-left:8px}
 ul.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:16px}
 ul.grid li{border:0;padding:6px;border-radius:8px}ul.grid small{display:block;margin:0}
+[hidden]{display:none!important}
+ul:not(.grid) li{display:flex;align-items:center;gap:12px}
+ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;font-size:20px;margin:0;flex:none}
+#pc{width:220px;height:220px;object-fit:cover;border-radius:8px;display:block;margin-bottom:12px}
 ul.grid img,.ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;
  display:flex;align-items:center;justify-content:center;font-size:40px;margin-bottom:6px}
 </style>
@@ -134,7 +185,8 @@ ul.grid img,.ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;b
 const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];let cur=-1;
 function play(i){if(i<0||i>=lis.length)return;lis.forEach(l=>l.classList.remove('on'));
  cur=i;const l=lis[i];l.classList.add('on');p.src='/media/{kind}/'+l.dataset.id;p.play();
- document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';window.scrollTo(0,0)}
+ document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
+ const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
 lis.forEach((l,i)=>l.onclick=()=>play(i));
 p.onended=()=>{if('{kind}'==='musique'){let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;play(n)}};
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
@@ -149,12 +201,26 @@ def carte_film(i, titre, chemin):
             f'{img}{html.escape(t)}<small>{a}</small></li>')
 
 
+def ligne_musique(i, titre, dossier, chemin, premier):
+    parent = str(Path(chemin).parent)
+    # Une seule URL par album pour que le navigateur ne télécharge l'image qu'une fois.
+    src = f"/cover/{premier.setdefault(parent, i)}" if COVERS.get(parent) else (META.get("album:" + dossier) or {}).get("affiche", "")
+    img = f'<img src="{html.escape(src)}" loading="lazy" alt="">' if src else '<div class="ph">🎵</div>'
+    return (f'<li data-id="{i}" data-t="{html.escape(titre)}" data-img="{html.escape(src)}">{img}'
+            f'<span>{html.escape(titre)}<small>{html.escape(dossier)}</small></span></li>')
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
-        m = re.fullmatch(r"/media/(films|musique)/(\d+)", url.path)
+        # Seuls les fichiers indexés sont servis (par numéro) : pas de traversée de chemin possible.
+        m = re.fullmatch(r"/(media/films|media/musique|cover)/(\d+)", url.path)
         if m:
-            return self.send_media(m[1], int(m[2]))
+            kind, idx = ("musique" if m[1] == "cover" else m[1][6:]), int(m[2])
+            if idx >= len(LIB[kind]):
+                return self.send_error(404)
+            path = LIB[kind][idx][2]
+            return self.send_file(COVERS.get(str(Path(path).parent)) if m[1] == "cover" else path)
         if url.path != "/":
             return self.send_error(404)
         kind = parse_qs(url.query).get("k", ["films"])[0]
@@ -162,14 +228,13 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "films":
             items = "".join(carte_film(i, t, c) for i, (t, _, c) in enumerate(LIB[kind]))
         else:
-            items = "".join(
-                f'<li data-id="{i}" data-t="{html.escape(t)}">{html.escape(t)}<small>{html.escape(d)}</small></li>'
-                for i, (t, d, _) in enumerate(LIB[kind]))
+            premier = {}
+            items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
         tag = "video" if kind == "films" else "audio"
         body = (PAGE.replace("{f}", "on" if kind == "films" else "").replace("{m}", "on" if kind == "musique" else "")
                 .replace("{nf}", str(len(LIB["films"]))).replace("{nm}", str(len(LIB["musique"])))
                 .replace("{grid}", "grid" if kind == "films" else "")
-                .replace("{player}", f'<{tag} id="p" controls></{tag}>').replace("{items}", items)
+                .replace("{player}", ('' if kind == "films" else '<img id="pc" hidden alt="">') + f'<{tag} id="p" controls></{tag}>').replace("{items}", items)
                 .replace("{kind}", kind)).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -177,11 +242,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_media(self, kind, idx):
-        # Seuls les fichiers indexés sont servis (par numéro) : pas de traversée de chemin possible.
-        if idx >= len(LIB[kind]):
+    def send_file(self, path):
+        if not path:
             return self.send_error(404)
-        path = LIB[kind][idx][2]
         try:
             size = os.path.getsize(path)
         except OSError:

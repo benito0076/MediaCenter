@@ -1,5 +1,5 @@
 """python test_mediacenter.py"""
-from mediacenter import nettoyer, choisir, choisir_tmdb
+from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album
 
 assert nettoyer("Le.Film.2024.1080p.x264-GRP") == ("Le Film", "2024")
 assert nettoyer("Inception (2010) [MULTI] 1080p") == ("Inception", "2010")
@@ -19,4 +19,7 @@ assert choisir_tmdb(tm, "2021") == {"titre": "Dune", "annee": "2021", "resume": 
                                     "affiche": "https://image.tmdb.org/t/p/w500/abc.jpg", "source": "tmdb"}
 assert choisir_tmdb(tm, "")["affiche"] == ""
 assert choisir_tmdb([], "") == {}
+assert nettoyer_album("Daft Punk - Discovery (2001) [FLAC]") == "Daft Punk Discovery"
+assert nettoyer_album("Daft Punk/Discovery/CD1") == "Daft Punk Discovery"
+assert nettoyer_album("Stromae\\Racine Carree 320kbps") == "Stromae Racine Carree"
 print("OK")
