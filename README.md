@@ -3,7 +3,7 @@
 Films, séries et musique dans le navigateur, sur le PC, la TV et le téléphone. Un seul fichier Python (ou un `.exe` Windows), sans installation.
 
 ## Installation (Windows) — le plus simple : le .exe
-1. Télécharger `MediaCenter.exe` (onglet **Actions** du dépôt → dernière exécution → *Artifacts* → `MediaCenter-windows`), le mettre dans un dossier à lui (ex. `C:\MediaCenter`).
+1. Télécharger **[MediaCenter.exe](https://github.com/benito0076/MediaCenter/releases/latest/download/MediaCenter.exe)** (toujours la dernière version, sans compte GitHub), le mettre dans un dossier à lui (ex. `C:\MediaCenter`). Il se mettra ensuite à jour tout seul.
 2. Double-clic : au premier lancement, choisir les dossiers de films, séries et musique. Le navigateur s'ouvre sur http://localhost:8765.
 3. Le Media Center reste **près de l'horloge** (icône rouge ▶) : *Ouvrir*, *Actualiser la bibliothèque*, *Démarrer avec Windows* (lancement discret à l'ouverture de session), *Quitter*. Un nouveau double-clic ouvre simplement le navigateur. Les messages vont dans `mediacenter.log`, à côté du .exe.
 
