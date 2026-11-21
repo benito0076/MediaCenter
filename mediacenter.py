@@ -5,7 +5,7 @@ Usage :  python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musiq
 Les dossiers sont mémorisés dans mediacenter.json ; ensuite `python mediacenter.py` suffit.
 Affiches et résumés : TMDB si une clé est donnée (--tmdb CLE), sinon iTunes ; gardés dans mediacenter_cache.json.
 """
-import argparse, hashlib, hmac, html, json, math, mimetypes, os, re, shutil, socket, subprocess, sys, tempfile, threading, time, webbrowser
+import argparse, hashlib, hmac, html, io, json, math, mimetypes, os, re, shutil, socket, subprocess, sys, tempfile, threading, time, webbrowser, zipfile
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -134,7 +134,10 @@ ES = {
 MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus": "vistos", "Français": "Francés",
            "Anglais": "Inglés", "Espagnol": "Español", "Allemand": "Alemán", "Italien": "Italiano", "Portugais": "Portugués",
            "Intégrés": "Integrados", "Piste": "Pista", "Sous-titres": "Subtítulos",
-           "Diagnostic": "Diagnóstico", "Version": "Versión", "Dossier": "Carpeta", "fichiers": "archivos", "introuvable": "no encontrada", "Dossiers": "Carpetas", "Affiches": "Pósters", "injoignable": "inaccesible", "joignable": "accesible", "Réseau": "Red", "activé": "activado", "aucun": "ninguno", "Films": "Películas", "Séries": "Series", "Musique": "Música"}
+           "Diagnostic": "Diagnóstico", "Version": "Versión", "Dossier": "Carpeta", "fichiers": "archivos", "introuvable": "no encontrada", "Dossiers": "Carpetas", "Affiches": "Pósters", "injoignable": "inaccesible", "joignable": "accesible", "Réseau": "Red", "activé": "activado", "aucun": "ninguno", "Films": "Películas", "Sauvegarde": "Copia de seguridad", "Exporter": "Exportar", "Importer": "Importar",
+           "Réglages, profils, « déjà vu », reprises, file d'attente, listes et affiches.": "Ajustes, perfiles, «visto», progreso, cola, listas y pósters.",
+           "Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.": "Restaurado. Reinicia el Media Center si cambiaste carpetas o el código.",
+           "Fichier refusé": "Archivo rechazado", "Séries": "Series", "Musique": "Música"}
 _MOTIF_ES = re.compile("|".join(re.escape(k) for k in sorted(ES, key=len, reverse=True)))
 
 
@@ -1007,7 +1010,14 @@ def diagnostic(complet=True):
 
 def html_diagnostic(sur_le_pc):
     lignes = "".join(f"<tr><td>{e}</td><td>{html.escape(s)}</td><td>{html.escape(str(d))}</td></tr>" for e, s, d in diagnostic())
-    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>'
+    sauvegarde = "" if not sur_le_pc else (
+        f'<h3>💾 {tr("Sauvegarde")}</h3><p>{tr("Réglages, profils, « déjà vu », reprises, file d\'attente, listes et affiches.")}</p>'
+        f'<a class="bt" href="/sauvegarde">{tr("Exporter")}</a> <label class="bt">{tr("Importer")}'
+        '<input type="file" id="imp" accept=".zip" hidden></label> <small id="imp_etat"></small>'
+        """<script>imp.onchange=async()=>{const r=await fetch('/restaurer',{method:'POST',body:imp.files[0]});"""
+        f"""imp_etat.textContent=r.ok?'{tr("Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.")}'"""
+        f""":'{tr("Fichier refusé")} ('+r.status+')'}}</script>""")
+    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}'
 
 
 def bandeau_maj():
@@ -1419,6 +1429,62 @@ def suivi(chemin):
     return attrs, (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + f'<b class="ck" title="{tr("Vu / pas vu")}">✓</b>'
 
 
+def charger_etat():
+    """Profils, affiches, « déjà vu », reprises, file d'attente : au démarrage et après l'import d'une sauvegarde."""
+    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+    PROFILS[:] = [p for p in cfg.get("profils", []) if isinstance(p, str)]
+    if CACHE.exists():
+        META.update(json.loads(CACHE.read_text("utf-8")))
+    SUIVI.clear()
+    SUIVIS.clear()
+    SUIVIS[""] = SUIVI  # les autres profils sont relus à la demande (S())
+    if SUIVI_F.exists():
+        SUIVI.update(json.loads(SUIVI_F.read_text("utf-8")))
+    ENCOURS.clear()
+    if ENCOURS_F.exists():
+        try:
+            ENCOURS.update(valider_encours(json.loads(ENCOURS_F.read_text("utf-8"))), lecture=False)  # rien ne joue au démarrage
+        except (ValueError, KeyError, TypeError):
+            pass
+    FILE.clear()
+    if FILE_F.exists():
+        try:
+            FILE[:] = valider_file(json.loads(FILE_F.read_text("utf-8")))
+        except ValueError:
+            print("⚠ mediacenter_file.json illisible : file d'attente vide")
+
+
+# Sauvegarde : tous les mediacenter*.json (réglages, profils, déjà vu, reprises, file, listes, affiches) dans un .zip.
+NOM_SAUVEGARDE = re.compile(r"mediacenter(_[a-z0-9_]+)?\.json")  # pas de « / » : rien ne s'écrit hors du dossier
+
+
+def exporter_sauvegarde():
+    tampon = io.BytesIO()
+    with zipfile.ZipFile(tampon, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(BASE.glob("mediacenter*.json")):
+            if NOM_SAUVEGARDE.fullmatch(f.name):
+                z.write(f, f.name)
+    return tampon.getvalue()
+
+
+def importer_sauvegarde(donnees):
+    """Vérifie tout le .zip avant d'écrire quoi que ce soit ; renvoie le nombre de fichiers restaurés."""
+    fichiers = {}
+    with zipfile.ZipFile(io.BytesIO(donnees)) as z:
+        for info in z.infolist():
+            if not NOM_SAUVEGARDE.fullmatch(info.filename) or info.file_size > 200 * 1024 ** 2:
+                raise ValueError(f"fichier inattendu : {info.filename}")
+            fichiers[info.filename] = z.read(info)
+            json.loads(fichiers[info.filename])
+    if "mediacenter.json" not in fichiers:
+        raise ValueError("ce n'est pas une sauvegarde du Media Center")
+    with VERROU:
+        for nom, contenu in fichiers.items():
+            (BASE / nom).write_bytes(contenu)
+        charger_etat()
+    return len(fichiers)
+
+
 def valider_file(data):
     """Corps envoyé par le navigateur -> liste de clés de morceaux, ou ValueError."""
     if not (isinstance(data, list) and len(data) <= 5000 and all(isinstance(k, str) and len(k) < 2000 for k in data)):
@@ -1667,6 +1733,16 @@ class Handler(BaseHTTPRequestHandler):
         m = re.fullmatch(r"/cast/(films|series)/(\d+)", url.path)
         if m and int(m[2]) < len(LIB[m[1]]):
             return self.send_bytes(json.dumps(infos_cast(m[1], int(m[2]))).encode(), "application/json")
+        if url.path == "/sauvegarde":  # PC seulement : la config contient le code d'accès
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self.send_error(403)
+            data = exporter_sauvegarde()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="mediacenter-{time.strftime("%Y-%m-%d")}.zip"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            return self.wfile.write(data)
         if url.path == "/diagnostic":
             return self.page_simple(html_diagnostic(self.client_address[0] in ("127.0.0.1", "::1")))
         if url.path == "/maj-etat":
@@ -1932,6 +2008,17 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             except OSError as e:
                 return self.send_error(500, str(e))
             return self.send_bytes(json.dumps({"nouveaux": n}).encode(), "application/json")
+        if urlparse(self.path).path == "/restaurer":  # import d'une sauvegarde : PC seulement
+            n = int(self.headers.get("Content-Length") or 0)
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                return self.send_error(403)
+            if not 0 < n <= 300 * 1024 ** 2:
+                return self.send_error(413)
+            try:
+                k = importer_sauvegarde(self.rfile.read(n))
+            except (ValueError, zipfile.BadZipFile) as e:
+                return self.send_error(400, str(e))
+            return self.send_bytes(json.dumps({"fichiers": k}).encode(), "application/json")
         if urlparse(self.path).path == "/cache-audio":
             return self.send_bytes(json.dumps({"octets": vider_cache_audio()}).encode(), "application/json")
         if urlparse(self.path).path == "/video":
@@ -2055,7 +2142,6 @@ def main():
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
     CFG.update(cfg)
     LANGUE[0] = cfg.get("langue") or langue_systeme()
-    PROFILS[:] = [p for p in cfg.get("profils", []) if isinstance(p, str)]
     dossiers = {k: cfg.get(k, []) for k in LIB}
     if not any(dossiers.values()) and sys.stdin and sys.stdin.isatty():  # 1er lancement (double-clic sur le .exe)
         print("Premier lancement : indique tes dossiers (copier-coller le chemin, ou Entrée pour passer).")
@@ -2073,20 +2159,7 @@ def main():
         if not Path(d).is_dir():
             print(f"⚠ Dossier introuvable : {d}")
 
-    if CACHE.exists():
-        META.update(json.loads(CACHE.read_text("utf-8")))
-    if SUIVI_F.exists():
-        SUIVI.update(json.loads(SUIVI_F.read_text("utf-8")))
-    if ENCOURS_F.exists():
-        try:
-            ENCOURS.update(valider_encours(json.loads(ENCOURS_F.read_text("utf-8"))), lecture=False)  # rien ne joue au démarrage
-        except (ValueError, KeyError, TypeError):
-            pass
-    if FILE_F.exists():
-        try:
-            FILE[:] = valider_file(json.loads(FILE_F.read_text("utf-8")))
-        except ValueError:
-            print("⚠ mediacenter_file.json illisible : file d'attente vide")
+    charger_etat()
     LECTEUR[0] = trouver_lecteur(cfg.get("lecteur_externe"))
     if cfg.get("lecteur_externe") and not LECTEUR[0]:
         print(f"⚠ Lecteur externe introuvable : {cfg['lecteur_externe']}")

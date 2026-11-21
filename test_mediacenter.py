@@ -375,4 +375,32 @@ with tempfile.TemporaryDirectory() as dd:
     assert [x[0] for x in d if x[1] == "Dossier Films"] == ["✅", "❌"]
 m.CFG.clear()
 assert m.tester_url("http://127.0.0.1:9/") != "ok"
+# Sauvegarde : export puis import (même dossier remis à zéro), noms piégés refusés
+import io as _io, json as _json, zipfile as _zip
+from pathlib import Path as _P
+_avant = {k: getattr(m, k) for k in ("BASE", "CONFIG", "CACHE", "SUIVI_F", "FILE_F", "ENCOURS_F")}
+with tempfile.TemporaryDirectory() as dd:
+    b = _P(dd)
+    m.BASE, m.CONFIG, m.CACHE, m.SUIVI_F = b, b / "mediacenter.json", b / "mediacenter_cache.json", b / "mediacenter_suivi.json"
+    m.FILE_F, m.ENCOURS_F = b / "mediacenter_file.json", b / "mediacenter_encours.json"
+    m.CONFIG.write_text(_json.dumps({"profils": ["Ana"]}))
+    m.SUIVI_F.write_text(_json.dumps({"film.mkv": {"t": 10, "vu": True}}))
+    (b / "mediacenter.log").write_text("x")
+    z = m.exporter_sauvegarde()
+    assert sorted(_zip.ZipFile(_io.BytesIO(z)).namelist()) == ["mediacenter.json", "mediacenter_suivi.json"]
+    m.SUIVI_F.unlink(); m.CONFIG.write_text("{}"); m.charger_etat()
+    assert m.PROFILS == [] and m.SUIVI == {}
+    assert m.importer_sauvegarde(z) == 2 and m.PROFILS == ["Ana"] and m.SUIVI["film.mkv"]["vu"] and m.SUIVIS[""] is m.SUIVI
+    for nom in ("../mediacenter.json", "autre.json"):
+        t = _io.BytesIO()
+        with _zip.ZipFile(t, "w") as zz:
+            zz.writestr("mediacenter.json", "{}"); zz.writestr(nom, "{}")
+        try:
+            m.importer_sauvegarde(t.getvalue()); assert False
+        except ValueError:
+            pass
+    assert not (b.parent / "mediacenter.json").exists() and _json.loads(m.CONFIG.read_text()) == {"profils": ["Ana"]}
+for k, v in _avant.items():
+    setattr(m, k, v)
+m.PROFILS.clear(); m.SUIVI.clear()
 print("OK")
