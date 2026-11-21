@@ -813,11 +813,12 @@ def besoin_conversion(chemin):
     return LECTURE[chemin]["hls"]
 
 
-def playlist_hls(duree):
-    """Liste HLS « à la demande » : tous les morceaux de SEG s sont annoncés, chacun est converti quand on le demande."""
+def playlist_hls(duree, suffixe=""):
+    """Liste HLS « à la demande » : tous les morceaux de SEG s sont annoncés, chacun est converti quand on le demande.
+    suffixe : « ?mc=… » repris sur chaque morceau (Chromecast, qui n'a pas le cookie du code d'accès)."""
     lignes = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{SEG}", "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:VOD"]
     for k in range(max(1, math.ceil(duree / SEG))):
-        lignes += [f"#EXTINF:{min(SEG, duree - k * SEG):.3f},", f"{k}.ts"]
+        lignes += [f"#EXTINF:{min(SEG, duree - k * SEG):.3f},", f"{k}.ts{suffixe}"]
     return "\n".join(lignes + ["#EXT-X-ENDLIST", ""])
 
 
@@ -957,6 +958,32 @@ def bandeau_outils():
                         f'<a href="{"https://ffmpeg.org/download.html" if o == "ffmpeg" else "https://www.videolan.org"}" target="_blank">'
                         f'{tr("Télécharger")}</a>') + "</div>" for o, t in manque)
     return bandeau_maj() + f'<div id="outils">{lignes}<small id="outils_etat"></small></div>'
+
+
+# --- Chromecast : la TV lit directement depuis le PC (il faut --reseau) ; le code d'accès passe dans l'adresse.
+RESEAU = [False]
+PORT = [8765]
+
+
+def ip_lan():
+    """Adresse du PC sur le réseau local (aucune donnée n'est envoyée : sert seulement à choisir l'interface)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as so:
+            so.connect(("192.0.2.1", 9))
+            return so.getsockname()[0]
+    except OSError:
+        return ""
+
+
+def infos_cast(kind, i):
+    """Adresse à donner au Chromecast : le fichier tel quel s'il le lit (MP4/WebM), sinon la conversion à la volée (HLS)."""
+    chemin = LIB[kind][i][2]
+    base, q = f"http://{ip_lan()}:{PORT[0]}", (f"?mc={ACCES['jeton']}" if ACCES["jeton"] else "")
+    hls = FFMPEG and FFPROBE and (besoin_conversion(chemin) or Path(chemin).suffix.lower() not in (".mp4", ".m4v", ".webm"))
+    if hls:
+        return {"url": f"{base}/hls/{kind}/{i}/index.m3u8{q}", "type": "application/x-mpegurl", "hls": True, "base": base, "q": q}
+    return {"url": f"{base}/media/{kind}/{i}{q}", "type": mimetypes.guess_type(chemin)[0] or "video/mp4", "hls": False,
+            "base": base, "q": q}
 
 
 def nom_canaux(n):
@@ -1456,7 +1483,15 @@ class Handler(BaseHTTPRequestHandler):
         if not ACCES["jeton"] or self.client_address[0] in ("127.0.0.1", "::1"):
             return True
         c = SimpleCookie(self.headers.get("Cookie", ""))
-        return "mc" in c and hmac.compare_digest(c["mc"].value, ACCES["jeton"])
+        if "mc" in c and hmac.compare_digest(c["mc"].value, ACCES["jeton"]):
+            return True
+        q = parse_qs(urlparse(self.path).query).get("mc", [""])[0]  # Chromecast : le code est dans l'adresse
+        return bool(q) and hmac.compare_digest(q, ACCES["jeton"])
+
+    def cors(self):
+        """Le récepteur Chromecast lit vidéos, listes HLS et sous-titres depuis une autre origine."""
+        if re.match(r"/(media|hls|sub)/", urlparse(self.path).path):
+            self.send_header("Access-Control-Allow-Origin", "*")
 
     def page_pin(self, erreur="", code=200):
         corps = traduire(PAGE_PIN).replace("{erreur}", tr(erreur)).encode()
@@ -1503,7 +1538,8 @@ class Handler(BaseHTTPRequestHandler):
             if not FFMPEG or duree <= 0:
                 return self.send_error(404)
             if m[4] == "index.m3u8":
-                return self.send_bytes(playlist_hls(duree).encode(), "application/vnd.apple.mpegurl")
+                mc = parse_qs(url.query).get("mc", [""])[0]
+                return self.send_bytes(playlist_hls(duree, f"?mc={quote(mc)}" if mc else "").encode(), "application/vnd.apple.mpegurl")
             k = int(m[4][:-3])
             if k * SEG >= duree:
                 return self.send_error(404)
@@ -1553,6 +1589,9 @@ class Handler(BaseHTTPRequestHandler):
             if fmt == "ass":
                 return self.send_bytes(texte.encode(), "text/plain; charset=utf-8")
             return self.send_bytes(vers_vtt(texte).encode(), "text/vtt; charset=utf-8")
+        m = re.fullmatch(r"/cast/(films|series)/(\d+)", url.path)
+        if m and int(m[2]) < len(LIB[m[1]]):
+            return self.send_bytes(json.dumps(infos_cast(m[1], int(m[2]))).encode(), "application/json")
         if url.path == "/maj-etat":
             return self.send_bytes(json.dumps({"etat": MAJ.get("etat", "")}).encode(), "application/json")
         if url.path == "/installer-etat":
@@ -1600,6 +1639,7 @@ class Handler(BaseHTTPRequestHandler):
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>'
             '<label id="pal" hidden>🔈 Audio <select id="pas" aria-label="Piste audio"></select> <span id="pae"></span></label>'
             '<button id="amp" class="bt" hidden>🔊 Lire sur l’ampli (passthrough)</button>'
+            '<button id="cast" class="bt" hidden>📺 Chromecast</button>'
             '<div id="vt" hidden>🎛 <span id="vtt"></span><br><button class="bt" data-v="-10" aria-label="Reculer de 10 secondes">⏪ 10 s</button>'
             '<button class="bt" id="vtpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-v="30" aria-label="Avancer de 30 secondes">30 s ⏩</button>'
             + ('<button class="bt" id="vtsv" aria-label="Épisode suivant (à distance)">⏭ Épisode suivant</button>' if kind == "series" else "")
@@ -1619,7 +1659,7 @@ class Handler(BaseHTTPRequestHandler):
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
         body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
                 .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)
-                .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "").replace("{ffmpeg}", "1" if FFMPEG and FFPROBE else "")).encode()
+                .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "").replace("{cast}", "1" if RESEAU[0] else "").replace("{ffmpeg}", "1" if FFMPEG and FFPROBE else "")).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1650,6 +1690,7 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
         try:
             self.send_response(200)
             self.send_header("Content-Type", "video/mp2t")
+            self.cors()
             self.end_headers()
             while morceau := proc.stdout.read(65536):
                 self.wfile.write(morceau)
@@ -1665,6 +1706,7 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
         self.send_response(200)
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(data)))
+        self.cors()
         self.end_headers()
         self.wfile.write(data)
 
@@ -1693,6 +1735,7 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             self.send_response(200)
         self.send_header("Content-Type", mimetypes.guess_type(path)[0] or "application/octet-stream")
         self.send_header("Accept-Ranges", "bytes")
+        self.cors()
         self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
         try:
@@ -1982,6 +2025,7 @@ def main():
         ACCES.update(jeton=jeton_pin(cfg["pin"], cfg["sel"]), sel=cfg["sel"])
     elif a.reseau:
         print("ℹ Accès réseau sans code : n'importe qui sur ton Wi-Fi peut ouvrir le Media Center. Ajoute --pin 1234 pour en demander un.")
+    RESEAU[0], PORT[0] = a.reseau, a.port
     host = "0.0.0.0" if a.reseau else "127.0.0.1"
     url = f"http://localhost:{a.port}/"
     try:

@@ -25,6 +25,27 @@ jobs:
         run: |
           "${{ github.run_number }}" | Out-File -Encoding ascii -NoNewline version.txt
           pyinstaller --onefile --noconsole --name MediaCenter --hidden-import pystray._win32 --add-data "jassub;jassub" --add-data "hlsjs;hlsjs" --add-data "web;web" --add-data "version.txt;." mediacenter.py
+      # Signature : seulement si un certificat de signature de code a été enregistré dans les secrets du dépôt
+      # (Settings → Secrets and variables → Actions) : WINDOWS_CERT_PFX (fichier .pfx en base64) et WINDOWS_CERT_PASSWORD.
+      - name: Certificat de signature présent ?
+        id: cert
+        shell: pwsh
+        env:
+          CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+        run: '"present=$(-not [string]::IsNullOrEmpty($env:CERT_PFX))" >> $env:GITHUB_OUTPUT'
+      - name: Signature du .exe (Windows SmartScreen ne préviendra plus)
+        if: steps.cert.outputs.present == 'True'
+        shell: pwsh
+        env:
+          CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          CERT_MDP: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:CERT_PFX))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:CERT_MDP /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist\MediaCenter.exe
+          if ($LASTEXITCODE -ne 0) { throw 'signature impossible' }
+          Remove-Item "$env:RUNNER_TEMP\cert.pfx"
+          & $signtool verify /pa dist\MediaCenter.exe
       - name: Essai du .exe (démarrage sans console, page, JASSUB et hls.js embarqués, 2e lancement)
         shell: pwsh
         run: |

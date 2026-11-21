@@ -11,6 +11,27 @@ Windows SmartScreen peut avertir (programme non signé) : *Informations complém
 
 **Avec Python** (sans le .exe) : `python mediacenter.py --films "D:\Films" --series "D:\Series" --musique "D:\Musique"` la première fois, puis `MediaCenter.bat`.
 
+## Langue / Idioma
+Interface en **français** ou en **espagnol** : celle de Windows par défaut, bouton **🌐** en haut pour changer (ou `--langue es|fr`). Les sous-titres choisis d'office suivent la langue. Seule l'interface est traduite, jamais les titres de ta bibliothèque.
+
+## Télécommande de la TV / clavier
+Sur un navigateur de TV ou au clavier : **flèches** pour aller d'une affiche / d'un morceau à l'autre (repère blanc), **Entrée** pour lancer, **Retour / Échap** pour revenir, **Espace** pour lecture / pause. Sur un morceau, **→** atteint ses boutons ↱ et +.
+
+## Profils
+Menu **👤** en haut : chaque personne a son « déjà vu », sa reprise et son accueil (*➕ Nouveau profil*). Chaque navigateur retient son profil ; la musique, la file d'attente et la télécommande restent communes.
+
+## Trier et filtrer
+Films et Séries : **Trier** (titre, ajoutés récemment, année), **Genre** (d'après TMDB / iTunes) et **Non vus**. Les choix sont gardés par navigateur.
+
+## Outils manquants et mises à jour
+Sur le PC, un bandeau signale s'il manque **ffmpeg** ou un lecteur pour l'ampli, avec un bouton **Installer** (winget, l'installateur de Windows) : l'outil est pris en compte sans redémarrer. Une fois par jour, le .exe regarde s'il existe une **nouvelle version** (releases GitHub du dépôt) : bouton **Mettre à jour** → téléchargement, remplacement du .exe et relance automatiques. Ces boutons ne marchent que depuis le PC lui-même.
+
+## Chromecast
+Dans Chrome **sur le PC** (http://localhost:8765), avec le Media Center lancé en `--reseau` : bouton **📺 Chromecast** sous la vidéo → la TV lit le film directement depuis le PC, à la même position, avec les sous-titres. Les formats que le Chromecast ne lit pas (MKV, AVI, HEVC…) sont convertis à la volée (ffmpeg). Le code d'accès (`--pin`) est transmis automatiquement. *Non testé sur un vrai Chromecast.*
+
+## Signature du .exe (optionnel, payant)
+Pour que Windows SmartScreen ne prévienne plus, il faut un **certificat de signature de code** (≈ 100 à 400 € / an, à ton nom). Une fois acheté : dans le dépôt GitHub, *Settings → Secrets and variables → Actions*, ajouter `WINDOWS_CERT_PFX` (le fichier .pfx encodé en base64) et `WINDOWS_CERT_PASSWORD`. Le .exe sera alors signé automatiquement à chaque fabrication.
+
 ## Accueil
 La page d'accueil montre **▶ Reprendre** (ce qui a été commencé, barre de progression), **⏭ Épisodes suivants** (l'épisode d'après le dernier vu, pour chaque série) et **🆕 Ajoutés récemment** ; un clic lance la lecture directement.
 

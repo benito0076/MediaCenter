@@ -363,4 +363,6 @@ assert mediacenter.commande_winget("vlc")[4] == "VideoLAN.VLC"
 assert mediacenter.lire_release({"tag_name": "build-42", "html_url": "https://x/r", "assets": [
     {"name": "notes.txt", "browser_download_url": "a"}, {"name": "MediaCenter.exe", "browser_download_url": "https://x/e"}]}) == (42, "https://x/r", "https://x/e")
 assert mediacenter.lire_release({}) == (0, "", None)
+assert "1.ts?mc=abc" in mediacenter.playlist_hls(10, "?mc=abc")
+assert mediacenter.ip_lan() == "" or mediacenter.ip_lan().count(".") == 3
 print("OK")

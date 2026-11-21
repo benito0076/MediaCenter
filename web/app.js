@@ -242,3 +242,20 @@ if(tri){try{const f=JSON.parse(localStorage.getItem('filtres_{kind}')||'{}');if(
 q.oninput=appliquer;
 {const j=new URLSearchParams(location.search).get('jouer');  // venu de l'accueil : lancer la lecture
  if(j!==null){const i=lis.findIndex(l=>l.dataset.id===j);if(i>=0)play(i)}}
+// Chromecast (Chrome sur le PC : page sur http://localhost) : la TV lit directement le fichier depuis le PC.
+// Il faut --reseau (sinon le Chromecast ne peut pas joindre le PC) ; formats non lus par le Chromecast : conversion HLS.
+if(vid&&'{cast}'&&window.chrome&&isSecureContext){window.__onGCastApiAvailable=ok=>{if(!ok)return;
+ const ctx=cast.framework.CastContext.getInstance(),M=chrome.cast.media;
+ ctx.setOptions({receiverApplicationId:M.DEFAULT_MEDIA_RECEIVER_APP_ID,autoJoinPolicy:chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED});
+ const b=document.getElementById('cast');b.hidden=false;b.onclick=async()=>{if(cur<0)return;
+  try{if(!ctx.getCurrentSession())await ctx.requestSession()}catch(e){return}
+  const l=lis[cur],c=await (await fetch('/cast/{kind}/'+l.dataset.id)).json(),mi=new M.MediaInfo(c.url,c.type);
+  if(c.hls){mi.hlsSegmentFormat=M.HlsSegmentFormat.TS;mi.hlsVideoSegmentFormat=M.HlsVideoSegmentFormat.MPEG2_TS}
+  mi.metadata=new M.MovieMediaMetadata();mi.metadata.title=l.dataset.t;
+  const pistes=[...p.querySelectorAll('track')];
+  mi.tracks=pistes.map((t,n)=>{const s=new M.Track(n+1,M.TrackType.TEXT);s.trackContentId=c.base+t.getAttribute('src')+c.q;
+   s.trackContentType='text/vtt';s.subtype=M.TextTrackType.SUBTITLES;s.name=t.label;return s});
+  const req=new M.LoadRequest(mi);req.currentTime=p.currentTime||0;
+  const actif=pistes.findIndex(t=>t.track.mode==='showing');if(actif>=0)req.activeTrackIds=[actif+1];
+  try{await ctx.getCurrentSession().loadMedia(req);p.pause()}catch(e){console.warn('Chromecast :',e)}}};
+ const s=document.createElement('script');s.src='https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';document.head.append(s)}
