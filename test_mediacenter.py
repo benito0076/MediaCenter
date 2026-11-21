@@ -270,4 +270,20 @@ assert not mediacenter.trop_d_essais("1.2.3.4")
 mediacenter.noter_echec("1.2.3.4")
 assert mediacenter.trop_d_essais("1.2.3.4") and not mediacenter.trop_d_essais("5.6.7.8")
 assert not mediacenter.trop_d_essais("1.2.3.4", time.time() + 301)  # débloqué après 5 minutes
+# Accueil : reprendre (le plus récent d'abord), épisode suivant après le dernier vu, ajoutés récemment (1 carte par série)
+m = mediacenter
+m.LIB.update(films=[("Dune", "", "/f/Dune.mkv"), ("Alien", "", "/f/Alien.mkv")], musique=[],
+             series=[("S01E01", "Lost", "/s/L1.mkv"), ("S01E02", "Lost", "/s/L2.mkv"), ("S01E03", "Lost", "/s/L3.mkv"),
+                     ("S01E01", "Dark", "/s/D1.mkv")])
+m.SUIVI.clear()
+m.SUIVI.update({"Dune.mkv": {"t": 600, "d": 6000, "quand": 10}, "Alien.mkv": {"t": 100, "d": 6000, "quand": 20},
+                "L1.mkv": {"vu": True, "t": 0, "quand": 5}, "D1.mkv": {"vu": True, "t": 0, "quand": 1}})
+m.AJOUT.clear()
+m.AJOUT.update({"/f/Dune.mkv": 1, "/f/Alien.mkv": 2, "/s/L1.mkv": 3, "/s/L2.mkv": 9, "/s/L3.mkv": 4, "/s/D1.mkv": 8})
+rangs = dict(m.accueil())
+assert [c[2] for c in rangs["▶ Reprendre"]] == ["Alien", "Dune"]  # plus récent d'abord
+assert rangs["▶ Reprendre"][1][4] == 10 and rangs["▶ Reprendre"][1][0] == "/?k=films&jouer=0"  # 10 % vu
+assert [(c[2], c[3]) for c in rangs["⏭ Épisodes suivants"]] == [("Lost", "S01E02")]  # Dark : plus d'épisode après
+assert rangs["⏭ Épisodes suivants"][0][0] == "/?k=series&s=Lost&jouer=1"
+assert [c[2] for c in rangs["🆕 Ajoutés récemment"]] == ["Lost", "Dark", "Alien", "Dune"]  # Lost une seule fois
 print("OK")

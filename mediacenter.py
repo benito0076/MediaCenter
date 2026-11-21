@@ -46,6 +46,7 @@ POLICES = {}  # chemin vidéo -> [fichiers de police]
 AUDIO_DIR = BASE / "audio_cache"  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
 ACCES = {"jeton": None}  # PIN pour les autres appareils (--pin) : jeton attendu dans le cookie « mc »
 ECHECS = {}  # adresse -> [nombre d'erreurs de PIN, heure de la première]
+AJOUT = {}  # chemin -> date du fichier (téléchargement)
 RESCAN = [lambda: 0]  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
@@ -341,6 +342,57 @@ border:0;background:#2a2a2a;color:#eee;letter-spacing:4px}button{margin-top:12px
 p{color:#e50914;min-height:1.2em}</style><form method="post" action="/connexion"><h2>🎬 Media Center</h2>
 <label for="pin">Code d'accès</label><br><input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" autofocus required>
 <p>{erreur}</p><button>Entrer</button></form></html>"""
+
+
+def accueil():
+    """Rangées de l'accueil : [(titre, [(lien, affiche, titre, sous-titre, % vu)])]."""
+    nom = lambda kind, i: Path(LIB[kind][i][2]).name
+    affiche = lambda kind, i: (META.get(nom(kind, i) if kind == "films" else "serie:" + LIB[kind][i][1]) or {}).get("affiche", "")
+    lien = lambda kind, i: (f"/?k=films&jouer={i}" if kind == "films"
+                            else f"/?k=series&s={quote(LIB[kind][i][1])}&jouer={i}")
+
+    def carte(kind, i, sous=""):
+        e = SUIVI.get(nom(kind, i), {})
+        pct = int(100 * e["t"] / e["d"]) if e.get("t") and e.get("d") else 0
+        titre = LIB[kind][i][0] if kind == "films" else LIB[kind][i][1]
+        return lien(kind, i), affiche(kind, i), titre, sous or ("" if kind == "films" else LIB[kind][i][0]), pct
+
+    videos = [(k, i) for k in ("films", "series") for i in range(len(LIB[k]))]
+    reprendre = sorted(((SUIVI[nom(k, i)].get("quand", 0), k, i) for k, i in videos
+                        if SUIVI.get(nom(k, i), {}).get("t") and not SUIVI[nom(k, i)].get("vu")), reverse=True)
+    deja = {(k, i) for _, k, i in reprendre}
+    suivants, eps = [], {}
+    for i in ordre("series"):
+        eps.setdefault(LIB["series"][i][1], []).append(i)
+    for liste in eps.values():
+        vus = [n for n, i in enumerate(liste) if SUIVI.get(nom("series", i), {}).get("vu")]
+        if vus and max(vus) + 1 < len(liste):
+            i = liste[max(vus) + 1]
+            if ("series", i) not in deja and not SUIVI.get(nom("series", i), {}).get("vu"):
+                suivants.append((SUIVI[nom("series", liste[max(vus)])].get("quand", 0), i))
+    recents, series_vues = [], set()
+    for k, i in sorted(videos, key=lambda x: AJOUT.get(LIB[x[0]][x[1]][2], 0), reverse=True):
+        if k == "series":  # une seule carte par série
+            if LIB[k][i][1] in series_vues:
+                continue
+            series_vues.add(LIB[k][i][1])
+        recents.append(carte(k, i))
+        if len(recents) == 20:
+            break
+    return [("▶ Reprendre", [carte(k, i) for _, k, i in reprendre[:20]]),
+            ("⏭ Épisodes suivants", [carte("series", i) for _, i in sorted(suivants, reverse=True)[:20]]),
+            ("🆕 Ajoutés récemment", recents)]
+
+
+def html_accueil():
+    rangs = "".join(
+        f'<h3>{titre}</h3><div class="rang">' + "".join(
+            f'<a class="carte" href="{html.escape(l)}">'
+            + (f'<img src="{html.escape(a)}" loading="lazy" alt="">' if a else '<div class="ph">🎬</div>')
+            + f'<span>{html.escape(t)}</span><small>{html.escape(st)}</small>'
+            + (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + "</a>" for l, a, t, st, pct in cartes) + "</div>"
+        for titre, cartes in accueil() if cartes)
+    return rangs or '<p class="vide">Rien pour l’instant : lance un film ou une série, ils apparaîtront ici.</p>'
 
 
 def titre_lib(kind, i):
@@ -700,6 +752,7 @@ def scan(dossiers):
                     else:
                         titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
                     items.append((titre or p.stem, dossier, str(p)))
+                    AJOUT[str(p)] = p.stat().st_mtime  # pour « Ajoutés récemment »
                     if kind == "musique":
                         if str(p.parent) not in COVERS:
                             COVERS[str(p.parent)] = pochette_locale(p.parent)
@@ -931,7 +984,11 @@ ul.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));g
 ul.grid li{border:0;padding:6px;border-radius:8px}ul.grid small{display:block;margin:0}
 [hidden]{display:none!important}
 li{position:relative;content-visibility:auto;contain-intrinsic-size:auto 68px}  /* lignes hors écran non dessinées */
-ul.grid li{contain-intrinsic-size:auto 300px}.bar{position:absolute;left:0;bottom:0;height:3px;background:#e50914}
+ul.grid li{contain-intrinsic-size:auto 300px}
+h3{margin:20px 0 10px}.rang{display:grid;grid-auto-flow:column;grid-auto-columns:150px;gap:14px;overflow-x:auto;padding-bottom:10px}
+.carte{position:relative;color:#eee;text-decoration:none;display:block;padding:6px;border-radius:8px}.carte:hover{background:#222}
+.carte img,.carte .ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;display:flex;
+ align-items:center;justify-content:center;font-size:40px;margin-bottom:6px}.carte small{display:block;margin:0}.vide{color:#888}.bar{position:absolute;left:0;bottom:0;height:3px;background:#e50914}
 .ck{margin-left:auto;padding:0 8px;opacity:.25;cursor:pointer}li.vu .ck{opacity:1;color:#4caf50}li.vu{color:#999}
 ul.grid .ck{position:absolute;top:12px;right:12px;background:#000b;border-radius:50%;padding:2px 7px}
 ul:not(.grid) li{display:flex;align-items:center;gap:12px}
@@ -954,7 +1011,7 @@ ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.sh
  display:flex;align-items:center;justify-content:center;font-size:40px;margin-bottom:6px}
 </style>
 <header><b>🎬 Media Center</b>
-<a class="tab {films}" href="/?k=films">Films ({nfilms})</a><a class="tab {series}" href="/?k=series">Séries ({nseries})</a>
+<a class="tab {accueil}" href="/">Accueil</a><a class="tab {films}" href="/?k=films">Films ({nfilms})</a><a class="tab {series}" href="/?k=series">Séries ({nseries})</a>
 <a class="tab {musique}" href="/?k=musique">Musique ({nmusique})</a>
 <input id="q" placeholder="Rechercher…" autofocus><button class="bt" id="rs" title="Chercher les nouveaux fichiers" aria-label="Actualiser la bibliothèque">🔄</button></header>
 <main>{player}{intro}<ul id="l" class="{grid}">{items}</ul>{pied}</main>
@@ -1173,6 +1230,8 @@ if(al){document.getElementById('sv').onclick=sv2;  // marche aussi en « Répét
  catch(e){}}  // touches ⏮ ⏭ du clavier / casque
 const txt=lis.map(l=>l.textContent.toLowerCase());  // préparé une fois : recherche rapide même avec 10 000 morceaux
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach((l,i)=>l.hidden=!txt[i].includes(s))};
+{const j=new URLSearchParams(location.search).get('jouer');  // venu de l'accueil : lancer la lecture
+ if(j!==null){const i=lis.findIndex(l=>l.dataset.id===j);if(i>=0)play(i)}}
 </script></html>"""
 
 
@@ -1313,8 +1372,10 @@ class Handler(BaseHTTPRequestHandler):
         if url.path != "/":
             return self.send_error(404)
         qs = parse_qs(url.query)
-        kind = qs.get("k", ["films"])[0]
-        kind = kind if kind in LIB else "films"
+        kind = qs.get("k", ["accueil"])[0]
+        kind = kind if kind in LIB else "accueil"
+        if kind == "accueil":
+            return self.page_accueil()
         intro, grid = '<h2 id="dt"></h2><p id="dr"></p>', kind == "films"
         if kind == "films":
             items = "".join(carte_film(i, *LIB[kind][i][::2]) for i in ordre(kind))
@@ -1347,12 +1408,29 @@ class Handler(BaseHTTPRequestHandler):
         pied = (f'<p id="pied">Pistes audio converties : <span id="ct">{taille / 1e6:.0f} Mo</span> '
                 f'<button class="bt" id="cv">🗑 Vider le cache audio</button></p>' if taille else "")
         body = PAGE
+        body = body.replace("{accueil}", "")
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
         body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
                 .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)
                 .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "")).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def page_accueil(self):
+        body = PAGE[:PAGE.index("<main>")].replace("{accueil}", "on")
+        for k in LIB:
+            n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
+            body = body.replace("{" + k + "}", "").replace("{n" + k + "}", str(n))
+        body = (body + "<main>" + html_accueil() + """</main><script>
+const cartes=[...document.querySelectorAll('.carte')];
+q.oninput=()=>{const s=q.value.toLowerCase();cartes.forEach(c=>c.hidden=!c.textContent.toLowerCase().includes(s))};
+document.getElementById('rs').onclick=async()=>{await fetch('/rescan',{method:'POST'});location.reload()};
+</script></html>""").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1545,7 +1623,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data = json.loads(self.rfile.read(n))
             with VERROU:
-                SUIVI[nom] = maj_suivi(SUIVI.get(nom, {}), data)
+                SUIVI[nom] = {**maj_suivi(SUIVI.get(nom, {}), data), "quand": time.time()}  # « Reprendre » : plus récent d'abord
                 SUIVI_F.write_text(json.dumps(SUIVI, ensure_ascii=False), "utf-8")
         except (ValueError, TypeError, KeyError, AttributeError):
             return self.send_error(400)
