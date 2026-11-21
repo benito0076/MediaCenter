@@ -35,3 +35,9 @@ document.querySelectorAll('[data-installer]').forEach(b=>b.onclick=async()=>{con
  const t=setInterval(async()=>{const e=(await (await fetch('/installer-etat')).json())[o];
   if(e==='ok'){clearInterval(t);etat.textContent='Installation terminée.';setTimeout(()=>location.reload(),800)}
   else if(e&&e!=='en cours'){clearInterval(t);etat.textContent=e;document.querySelectorAll('[data-installer]').forEach(x=>x.disabled=false)}},3000)});
+// Mise à jour (sur le PC) : téléchargement, le Media Center se ferme puis se relance ; la page se recharge toute seule.
+{const b=document.getElementById('majok');if(b)b.onclick=async()=>{b.disabled=true;const etat=document.getElementById('maj_etat');
+ etat.textContent='Téléchargement de la nouvelle version…';await fetch('/maj',{method:'POST'});
+ const t=setInterval(async()=>{try{const e=(await (await fetch('/maj-etat')).json()).etat;
+  if(e.startsWith('erreur')){clearInterval(t);etat.textContent=e;b.disabled=false}else if(e==='redémarrage')etat.textContent='Redémarrage…'}
+  catch(x){etat.textContent='Redémarrage…';clearInterval(t);const r=setInterval(async()=>{try{await fetch('/');clearInterval(r);location.reload()}catch(y){}},2000)}},1500)}}

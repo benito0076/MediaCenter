@@ -112,7 +112,9 @@ ES = {
     "Télécharger": "Descargar", "ffmpeg (vidéos AVI/HEVC, sous-titres et pistes audio des MKV, son AC3/DTS)":
         "ffmpeg (vídeos AVI/HEVC, subtítulos y pistas de audio de los MKV, sonido AC3/DTS)",
     "un lecteur pour l'ampli (passthrough Dolby/DTS)": "un reproductor para el amplificador (passthrough Dolby/DTS)",
-    "Installation en cours… (quelques minutes)": "Instalando… (unos minutos)", "Installation terminée.": "Instalación terminada.", "Trier ": "Ordenar ", ">Titre<": ">Título<",
+    "Installation en cours… (quelques minutes)": "Instalando… (unos minutos)", "Nouvelle version disponible":
+        "Nueva versión disponible", "actuelle": "actual", "Mettre à jour": "Actualizar", "Voir": "Ver",
+    "Téléchargement de la nouvelle version…": "Descargando la nueva versión…", "Redémarrage…": "Reiniciando…", "Installation terminée.": "Instalación terminada.", "Trier ": "Ordenar ", ">Titre<": ">Título<",
     ">Ajoutés récemment<": ">Añadidas recientemente<", "Année (récents)": "Año (recientes)", "Année (anciens)": "Año (antiguas)",
     "Genre <": "Género <", ">Tous<": ">Todos<", " Non vus": " No vistas", "🌐 Español": "🌐 Français",
 }
@@ -868,19 +870,93 @@ def installer(outil):
         INSTALLS[outil] = f"erreur : {e}"
 
 
+# --- Mises à jour : le .exe connaît son numéro (fabrication GitHub) ; une fois par jour, il regarde la dernière
+# version publiée (Releases) et propose de se mettre à jour. Lancé avec Python (VERSION = 0) : rien à faire ici.
+VERSION = int((RESSOURCES / "version.txt").read_text().strip() or 0) if (RESSOURCES / "version.txt").exists() else 0
+URL_MAJ = os.environ.get("MEDIACENTER_MAJ_URL", "https://api.github.com/repos/benito0076/MediaCenter/releases/latest")
+MAJ = {}  # {"version", "page", "exe"} si une version plus récente existe ; "etat" pendant la mise à jour
+
+
+def lire_release(d):
+    """Réponse de l'API GitHub -> (numéro, page, lien du .exe)."""
+    n = int(re.sub(r"\D", "", d.get("tag_name", "")) or 0)
+    exe = next((a.get("browser_download_url") for a in d.get("assets", []) if a.get("name", "").lower().endswith(".exe")), None)
+    return n, d.get("html_url", ""), exe
+
+
+def verifier_maj():
+    if not VERSION:
+        return
+    try:
+        req = Request(URL_MAJ, headers={"Accept": "application/vnd.github+json", "User-Agent": "MediaCenter"})
+        with urlopen(req, timeout=10) as r:
+            n, page, exe = lire_release(json.load(r))
+        if n > VERSION and exe:
+            MAJ.update(version=n, page=page, exe=exe)
+    except (OSError, ValueError, AttributeError):
+        pass  # pas d'internet : on réessaiera demain
+
+
+def surveiller_maj():
+    while True:
+        verifier_maj()
+        time.sleep(86400)
+
+
+def appliquer_maj():
+    """Télécharge le nouveau .exe à côté de l'actuel ; un petit script attend la fermeture du Media Center,
+    remplace le fichier et le relance. En cas d'échec, l'ancien .exe reste en place."""
+    try:
+        if os.name != "nt" or not GELE:
+            raise OSError("mise à jour automatique : seulement pour le .exe Windows")
+        exe = Path(sys.executable)
+        neuf = exe.with_name(exe.stem + ".new.exe")
+        with urlopen(Request(MAJ["exe"], headers={"User-Agent": "MediaCenter"}), timeout=600) as r, open(neuf, "wb") as f:
+            shutil.copyfileobj(r, f)
+        if neuf.stat().st_size < 1_000_000:
+            raise OSError("téléchargement incomplet")
+        bat = exe.with_name("maj_mediacenter.bat")
+        pere = os.getppid()  # le lanceur PyInstaller, qui garde le .exe ouvert jusqu'à la fin
+        # (ping comme minuterie : « timeout » refuse de tourner sans console)
+        bat.write_text(f"""@echo off
+chcp 65001 >nul
+:attente
+tasklist /FI "PID eq {pere}" | find "{pere}" >nul && (ping -n 2 127.0.0.1 >nul & goto attente)
+set /a essais=0
+:copie
+move /y "{neuf}" "{exe}" >nul || (set /a essais+=1 & ping -n 2 127.0.0.1 >nul & if %essais% lss 20 goto copie)
+start "" "{exe}"
+del "%~f0"
+""", encoding="utf-8")
+        subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        MAJ["etat"] = "redémarrage"
+        threading.Timer(1, os._exit, [0]).start()  # laisse le temps de répondre à la page
+    except (OSError, KeyError) as e:
+        MAJ["etat"] = f"erreur : {e}"
+
+
+def bandeau_maj():
+    if not MAJ.get("version"):
+        return ""
+    return (f'<div id="maj">🆕 {tr("Nouvelle version disponible")} ({MAJ["version"]}, {tr("actuelle")} {VERSION}) '
+            f'<button class="bt" id="majok">{tr("Mettre à jour")}</button> '
+            f'<a href="{html.escape(MAJ["page"])}" target="_blank">{tr("Voir")}</a> <small id="maj_etat"></small></div>')
+
+
 def bandeau_outils():
     """Sur le PC seulement : ce qui manque, avec un bouton « Installer » si winget est là."""
     manque = [(o, t) for o, t, ok in (("ffmpeg", "ffmpeg (vidéos AVI/HEVC, sous-titres et pistes audio des MKV, son AC3/DTS)",
                                        FFMPEG and FFPROBE),
                                       ("vlc", "un lecteur pour l'ampli (passthrough Dolby/DTS)", LECTEUR[0])) if not ok]
     if not manque:
-        return ""
+        return bandeau_maj()
     winget = bool(shutil.which("winget"))
     lignes = "".join(f'<div>⚙ {tr("Manque :")} {tr(t)} '
                      + (f'<button class="bt" data-installer="{o}">{tr("Installer")}</button>' if winget else
                         f'<a href="{"https://ffmpeg.org/download.html" if o == "ffmpeg" else "https://www.videolan.org"}" target="_blank">'
                         f'{tr("Télécharger")}</a>') + "</div>" for o, t in manque)
-    return f'<div id="outils">{lignes}<small id="outils_etat"></small></div>'
+    return bandeau_maj() + f'<div id="outils">{lignes}<small id="outils_etat"></small></div>'
 
 
 def nom_canaux(n):
@@ -1477,6 +1553,8 @@ class Handler(BaseHTTPRequestHandler):
             if fmt == "ass":
                 return self.send_bytes(texte.encode(), "text/plain; charset=utf-8")
             return self.send_bytes(vers_vtt(texte).encode(), "text/vtt; charset=utf-8")
+        if url.path == "/maj-etat":
+            return self.send_bytes(json.dumps({"etat": MAJ.get("etat", "")}).encode(), "application/json")
         if url.path == "/installer-etat":
             return self.send_bytes(json.dumps(INSTALLS).encode(), "application/json")
         if url.path == "/file":
@@ -1682,6 +1760,13 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
                 print(f"⚠ Lecteur externe impossible à lancer : {e}")
                 return self.send_error(500)
             self.send_response(204)
+            return self.end_headers()
+        if urlparse(self.path).path == "/maj":  # bouton « Mettre à jour » : sur le PC seulement
+            if self.client_address[0] not in ("127.0.0.1", "::1") or not MAJ.get("exe"):
+                return self.send_error(403)
+            MAJ["etat"] = "téléchargement"
+            threading.Thread(target=appliquer_maj, daemon=True).start()
+            self.send_response(202)
             return self.end_headers()
         m = re.fullmatch(r"/installer/(ffmpeg|vlc)", urlparse(self.path).path)
         if m:  # seulement depuis le PC lui-même : un autre appareil ne peut pas lancer d'installation
@@ -1889,6 +1974,7 @@ def main():
     if not a.hors_ligne:
         threading.Thread(target=enrichir, args=(cfg.get("tmdb"),), daemon=True).start()
     threading.Thread(target=surveiller, args=(dossiers, not a.hors_ligne, cfg.get("tmdb")), daemon=True).start()
+    threading.Thread(target=surveiller_maj, daemon=True).start()
     RESCAN[0] = lambda: scan(dossiers)
     if cfg.get("pin") and cfg["pin"] != "aucun":
         cfg.setdefault("sel", __import__("secrets").token_hex(8))

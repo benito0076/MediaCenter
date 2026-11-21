@@ -1,13 +1,16 @@
-# Fabrique MediaCenter.exe sur une machine Windows (PyInstaller ne sait pas le faire depuis Linux),
-# le teste, et le met à disposition dans l'onglet Actions (artefact « MediaCenter-windows »).
+# Fabrique MediaCenter.exe sur une machine Windows (PyInstaller ne sait pas le faire depuis Linux), le teste,
+# le met à disposition (artefact « MediaCenter-windows ») et le publie en release « build-N » : c'est là que
+# le Media Center installé va chercher ses mises à jour.
 name: MediaCenter.exe (Windows)
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write  # publier la release
 jobs:
   exe:
     runs-on: windows-latest
-    timeout-minutes: 15  # une étape bloquée ne doit pas tourner des heures
+    timeout-minutes: 20  # une étape bloquée ne doit pas tourner des heures
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,8 +20,11 @@ jobs:
         run: |
           pip install pyinstaller==6.11.1 pystray==0.19.5 pillow==11.0.0
           python test_mediacenter.py
-      - name: Fabrication du .exe
-        run: pyinstaller --onefile --noconsole --name MediaCenter --hidden-import pystray._win32 --add-data "jassub;jassub" --add-data "hlsjs;hlsjs" --add-data "web;web" mediacenter.py
+      - name: Fabrication du .exe (avec son numéro de version)
+        shell: pwsh
+        run: |
+          "${{ github.run_number }}" | Out-File -Encoding ascii -NoNewline version.txt
+          pyinstaller --onefile --noconsole --name MediaCenter --hidden-import pystray._win32 --add-data "jassub;jassub" --add-data "hlsjs;hlsjs" --add-data "web;web" --add-data "version.txt;." mediacenter.py
       - name: Essai du .exe (démarrage sans console, page, JASSUB et hls.js embarqués, 2e lancement)
         shell: pwsh
         run: |
@@ -39,8 +45,37 @@ jobs:
           if ($js.Headers['Content-Type'] -notmatch 'javascript') { throw 'JASSUB absent du .exe' }
           if ($hls.Content.Length -lt 100000) { throw 'hls.js absent du .exe' }
           if (-not (Test-Path dist\mediacenter.json)) { throw 'config pas à côté du .exe' }
-          "OK : page servie, JASSUB embarqué, config à côté du .exe"
+          "OK : page servie, JASSUB et hls.js embarqués, config à côté du .exe"
+      - name: Essai de la mise à jour automatique (téléchargement, remplacement du .exe, relance)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force maj\serveur, maj\appli | Out-Null
+          Copy-Item dist\MediaCenter.exe maj\serveur\MediaCenter.exe
+          Copy-Item dist\MediaCenter.exe maj\appli\MediaCenter.exe
+          '{"tag_name":"build-999999","html_url":"http://localhost:8766/","assets":[{"name":"MediaCenter.exe","browser_download_url":"http://localhost:8766/MediaCenter.exe"}]}' | Out-File -Encoding ascii maj\serveur\latest.json
+          $srv = Start-Process python -ArgumentList '-m','http.server','8766' -WorkingDirectory maj\serveur -PassThru
+          $env:MEDIACENTER_MAJ_URL = 'http://localhost:8766/latest.json'
+          $p = Start-Process maj\appli\MediaCenter.exe -ArgumentList '--films','films','--hors-ligne','--port','8770','--sans-navigateur' -PassThru
+          Start-Sleep 8
+          if ((Invoke-WebRequest http://localhost:8770/ -UseBasicParsing).Content -notmatch '999999') { throw 'pas de bandeau de mise à jour' }
+          Invoke-WebRequest http://localhost:8770/maj -Method POST -UseBasicParsing | Out-Null
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) { Start-Sleep 2; if ($p.HasExited -and -not (Test-Path maj\appli\maj_mediacenter.bat)) { try { Invoke-WebRequest http://localhost:8765/ -UseBasicParsing | Out-Null; $ok = $true; break } catch {} } }
+          Get-ChildItem maj\appli | Format-Table Name, Length
+          Get-Content maj\appli\mediacenter.log
+          Get-Process MediaCenter -ErrorAction SilentlyContinue | Stop-Process -Force
+          Stop-Process $srv
+          if (-not $p.HasExited) { throw 'l ancien Media Center ne s est pas fermé' }
+          if (Test-Path maj\appli\MediaCenter.new.exe) { throw 'le nouveau .exe n a pas remplacé l ancien' }
+          if (-not $ok) { throw 'le Media Center ne s est pas relancé après la mise à jour' }
+          "OK : mise à jour téléchargée, .exe remplacé, Media Center relancé"
       - uses: actions/upload-artifact@v4
         with:
           name: MediaCenter-windows
           path: dist/MediaCenter.exe
+      - name: Publication (release « build-N », pour la mise à jour automatique)
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "build-${{ github.run_number }}" dist/MediaCenter.exe --target "${{ github.sha }}" --title "Media Center build ${{ github.run_number }}" --notes "MediaCenter.exe fabriqué et testé automatiquement." --latest
