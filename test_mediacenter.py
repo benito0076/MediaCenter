@@ -112,4 +112,19 @@ for mauvais in ({"a": 1}, [1, 2], "texte", ["x" * 3000]):
         raise AssertionError(mauvais)
     except ValueError:
         pass
+e = mediacenter.valider_encours({"k": "A/1.mp3", "t": 12.34, "lecture": True})
+assert (e["k"], e["t"], e["lecture"]) == ("A/1.mp3", 12.3, True) and e["quand"] > 0
+for mauvais in ({"k": "A", "t": "nan", "lecture": True}, {"k": 1, "t": 1, "lecture": True}, {"k": "A", "t": 1, "lecture": "oui"},
+                {"k": "A", "t": -5, "lecture": False}, {"t": 1}):
+    try:
+        mediacenter.valider_encours(mauvais)
+        raise AssertionError(mauvais)
+    except (ValueError, KeyError):
+        pass
+joue = {"k": "A", "t": 5, "lecture": True, "dev": "tel", "quand": 100.0}
+assert not mediacenter.accepter_encours(joue, {"k": "A", "t": 3, "lecture": False, "dev": "pc", "quand": 105.0})  # relais
+assert mediacenter.accepter_encours(joue, {"k": "A", "t": 9, "lecture": False, "dev": "tel", "quand": 105.0})  # sa propre pause
+assert mediacenter.accepter_encours(joue, {"k": "B", "t": 0, "lecture": True, "dev": "pc", "quand": 105.0})  # l'autre lance
+assert mediacenter.accepter_encours(joue, {"k": "A", "t": 3, "lecture": False, "dev": "pc", "quand": 140.0})  # tél muet > 30 s
+assert mediacenter.accepter_encours({}, {"k": "A", "t": 3, "lecture": False, "dev": "pc", "quand": 1.0})
 print("OK")

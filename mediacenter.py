@@ -17,6 +17,8 @@ CACHE = Path(__file__).with_name("mediacenter_cache.json")
 SUIVI_F = Path(__file__).with_name("mediacenter_suivi.json")
 FILE_F = Path(__file__).with_name("mediacenter_file.json")
 FILE = []  # file d'attente musique commune à tous les appareils : ["dossier/fichier", …]
+ENCOURS_F = Path(__file__).with_name("mediacenter_encours.json")
+ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "quand"}
 SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
 VERROU = threading.Lock()
 EXT = {
@@ -466,6 +468,21 @@ def valider_file(data):
     return data
 
 
+def valider_encours(data):
+    """{"k": clé, "t": position, "lecture": bool, "dev": id d'appareil} envoyé par le navigateur, ou ValueError."""
+    k, t, lecture, dev = data["k"], float(data["t"]), data["lecture"], data.get("dev", "")
+    if not (isinstance(k, str) and len(k) < 2000 and math.isfinite(t) and 0 <= t < 1e6 and isinstance(lecture, bool)
+            and isinstance(dev, str) and len(dev) < 100):
+        raise ValueError("morceau en cours invalide")
+    return {"k": k, "t": round(t, 1), "lecture": lecture, "dev": dev, "quand": time.time()}
+
+
+def accepter_encours(actuel, nouveau):
+    """Un appareil qui se met en pause n'écrase pas un autre appareil qui joue encore (passage de relais)."""
+    return not (actuel.get("lecture") and not nouveau["lecture"] and actuel.get("dev") != nouveau["dev"]
+                and nouveau["quand"] - actuel["quand"] < 30)
+
+
 PAGE = """<!doctype html><html lang="fr"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Media Center</title>
 <style>
@@ -508,10 +525,10 @@ ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.sh
 <main>{player}{intro}<ul id="l" class="{grid}">{items}</ul></main>
 <script>
 const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];let cur=-1;
-const vid='{kind}'!=='musique';let last=0;
+const vid='{kind}'!=='musique';let last=0,proprio=false,geste=0;const APPAREIL=Math.random().toString(36).slice(2);  // proprio : cet appareil joue (ou a joué) le morceau en cours
 function envoi(l,data){navigator.sendBeacon('/suivi/{kind}/'+l.dataset.id,JSON.stringify(data))}
-function save(){if(!vid){if(cur>=0)try{localStorage.setItem('encours',JSON.stringify({k:lis[cur].dataset.k,t:p.currentTime}))}catch(e){}
- return}  // musique : morceau en cours + position, pour la reprise
+function save(){if(!vid){if(cur>=0&&proprio)navigator.sendBeacon('/encours',  // musique : morceau en cours, commun aux appareils
+  JSON.stringify({k:lis[cur].dataset.k,t:p.currentTime||0,lecture:!p.paused,dev:APPAREIL}));return}
  if(cur<0||!(p.currentTime>1))return;const l=lis[cur];envoi(l,{t:p.currentTime,d:p.duration||0});
  l.dataset.pos=p.currentTime;if(p.duration&&p.currentTime>.9*p.duration){l.classList.add('vu');l.dataset.pos=0}}
 p.ontimeupdate=()=>{if(Math.abs(p.currentTime-last)>10){last=p.currentTime;save()}};
@@ -587,9 +604,15 @@ if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagati
  async function chargerFile(){try{const ks=await (await fetch('/file')).json(),j=JSON.stringify(ks);
   if(j===derniere||glisse!==null)return;derniere=j;file=ks.map(k=>parK.get(k)).filter(i=>i!==undefined);majFile(false)}catch(e){}}
  chargerFile();setInterval(chargerFile,5000);
- // Reprise du morceau en cours : prêt à la bonne position, en pause (les navigateurs bloquent la lecture automatique).
- try{const e=JSON.parse(localStorage.getItem('encours')||'null'),i=e?lis.findIndex(l=>l.dataset.k===e.k):-1;
-  if(i>=0){if(e.t>0)p.addEventListener('loadedmetadata',()=>{p.currentTime=e.t},{once:true});play(i,false)}}catch(e){}}
+ // Morceau en cours commun : un appareil à l'arrêt suit ce que joue un autre (même morceau, même position, en pause) ;
+ // appuyer sur ▶ reprend alors la lecture ici. Les navigateurs interdisent de lancer le son tout seul.
+ p.addEventListener('play',()=>{proprio=true;save()});
+ for(const ev of ['pointerdown','keydown'])p.addEventListener(ev,()=>{geste=Date.now()});  // curseur déplacé à la main
+ async function suivreEncours(){if(!p.paused||Date.now()-geste<15000)return;try{const e=await (await fetch('/encours')).json(),i=parK.get(e.k);
+  if(i===undefined||!p.paused)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);  // > 30 s sans nouvelles : appareil éteint
+  if(i===cur&&Math.abs(p.currentTime-t)<3)return;proprio=false;
+  if(i!==cur){p.addEventListener('loadedmetadata',()=>{p.currentTime=t},{once:true});play(i,false)}else p.currentTime=t}catch(e){}}
+ suivreEncours();setInterval(suivreEncours,5000)}
 function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.shift();majFile();return play(n)}
  if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
  let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)}
@@ -697,6 +720,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(vers_vtt(texte).encode(), "text/vtt; charset=utf-8")
         if url.path == "/file":
             return self.send_bytes(json.dumps(FILE, ensure_ascii=False).encode(), "application/json")
+        if url.path == "/encours":
+            e = dict(ENCOURS)
+            if e:
+                e["age"] = round(time.time() - e.pop("quand"), 1)
+                e.pop("dev", None)
+            return self.send_bytes(json.dumps(e, ensure_ascii=False).encode(), "application/json")
         if url.path != "/":
             return self.send_error(404)
         qs = parse_qs(url.query)
@@ -780,6 +809,23 @@ class Handler(BaseHTTPRequestHandler):
             pass  # le navigateur a coupé (seek / pause) : normal
 
     def do_POST(self):
+        if urlparse(self.path).path == "/encours":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                if n > 5000:
+                    raise ValueError("trop gros")
+                nouveau = valider_encours(json.loads(self.rfile.read(n)))
+                with VERROU:
+                    if not accepter_encours(ENCOURS, nouveau):
+                        self.send_response(204)
+                        return self.end_headers()
+                    ENCOURS.clear()
+                    ENCOURS.update(nouveau)
+                    ENCOURS_F.write_text(json.dumps(ENCOURS, ensure_ascii=False), "utf-8")
+            except (ValueError, KeyError, TypeError):
+                return self.send_error(400)
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/file":
             n = int(self.headers.get("Content-Length") or 0)
             try:
@@ -839,6 +885,11 @@ def main():
         META.update(json.loads(CACHE.read_text("utf-8")))
     if SUIVI_F.exists():
         SUIVI.update(json.loads(SUIVI_F.read_text("utf-8")))
+    if ENCOURS_F.exists():
+        try:
+            ENCOURS.update(valider_encours(json.loads(ENCOURS_F.read_text("utf-8"))), lecture=False)  # rien ne joue au démarrage
+        except (ValueError, KeyError, TypeError):
+            pass
     if FILE_F.exists():
         try:
             FILE[:] = valider_file(json.loads(FILE_F.read_text("utf-8")))
