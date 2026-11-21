@@ -11,13 +11,13 @@ assert nettoyer("Mon film de vacances") == ("Mon film de vacances", "")
 
 res = [{"trackName": "Dune", "releaseDate": "1984-12-14", "artworkUrl100": "x/100x100bb.jpg"},
        {"trackName": "Dune", "releaseDate": "2021-09-15", "longDescription": "Paul…", "artworkUrl100": "y/100x100bb.jpg"}]
-assert choisir(res, "2021") == {"titre": "Dune", "annee": "2021", "resume": "Paul…", "affiche": "y/600x600bb.jpg"}
+assert choisir(res, "2021") == {"titre": "Dune", "annee": "2021", "resume": "Paul…", "affiche": "y/600x600bb.jpg", "genres": []}
 assert choisir(res, "")["annee"] == "1984"
 assert choisir([], "2021") == {}
 tm = [{"title": "Dune", "release_date": "1984-12-14", "overview": "", "poster_path": None},
-      {"title": "Dune", "release_date": "2021-09-15", "overview": "Paul…", "poster_path": "/abc.jpg"}]
+      {"title": "Dune", "release_date": "2021-09-15", "overview": "Paul…", "poster_path": "/abc.jpg", "genre_ids": [878, 12, 99999]}]
 assert choisir_tmdb(tm, "2021") == {"titre": "Dune", "annee": "2021", "resume": "Paul…",
-                                    "affiche": "https://image.tmdb.org/t/p/w500/abc.jpg", "source": "tmdb"}
+                                    "affiche": "https://image.tmdb.org/t/p/w500/abc.jpg", "genres": ["Science-Fiction", "Aventure"], "source": "tmdb"}
 assert choisir_tmdb(tm, "")["affiche"] == ""
 assert choisir_tmdb([], "") == {}
 assert nettoyer_album("Daft Punk - Discovery (2001) [FLAC]") == "Daft Punk Discovery"
@@ -331,4 +331,13 @@ assert "Películas (" in m.gabarit() and "🌐 Français" in m.gabarit() and 'la
 assert m.nom_piste({"tags": {"language": "fre"}}) == "Francés" and m.nom_piste({}, "Piste") == "Pista"
 m.LANGUE[0] = "fr"
 assert m.tr("Vu / pas vu") == "Vu / pas vu" and "Films (" in m.gabarit()
+# Garde-fou : traduire() ne doit jamais toucher au code des pages (noms de variables, classes, identifiants).
+import re as _re
+code = "".join((Path(mediacenter.WEB_DIR) / f).read_text("utf-8") for f in ("app.js", "nav.js", "page.html", "style.css"))
+noms_code = set(_re.findall(r"[A-Za-zÀ-ÿ_][\wÀ-ÿ]*", _re.sub(r"'[^'\n]*'|\"[^\"\n]*\"|>[^<]*<|//[^\n]*|/\*.*?\*/", " ", code, flags=_re.S)))
+dangereuses = [k for k in mediacenter.ES if _re.fullmatch(r"[\wÀ-ÿ]+", k) and k in noms_code]
+assert not dangereuses, dangereuses
+m.LANGUE[0] = "es"
+assert "'vu'" in mediacenter.traduire(code) and 'id="nonvus"' in mediacenter.traduire('<input type="checkbox" id="nonvus"> Non vus')
+m.LANGUE[0] = "fr"
 print("OK")

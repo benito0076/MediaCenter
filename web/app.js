@@ -227,6 +227,18 @@ if(al){document.getElementById('sv').onclick=sv2;  // marche aussi en « Répét
  try{navigator.mediaSession.setActionHandler('nexttrack',sv2);navigator.mediaSession.setActionHandler('previoustrack',pv2)}
  catch(e){}}  // touches ⏮ ⏭ du clavier / casque
 const txt=lis.map(l=>l.textContent.toLowerCase());  // préparé une fois : recherche rapide même avec 10 000 morceaux
-q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach((l,i)=>l.hidden=!txt[i].includes(s))};
+// Recherche + filtres (genre, non vus) + tri ; choix gardés dans le navigateur, par page.
+const tri=document.getElementById('tri'),genre=document.getElementById('genre'),nonvus=document.getElementById('nonvus');
+const CLES={titre:l=>l.dataset.t.toLowerCase(),ajout:l=>-(+l.dataset.ajout||0),annee:l=>-(+l.dataset.annee||0),annee_asc:l=>+l.dataset.annee||9999};
+function appliquer(){const s=q.value.toLowerCase(),g=genre?genre.value:'',nv=nonvus&&nonvus.checked;
+ lis.forEach((l,i)=>l.hidden=!(txt[i].includes(s)&&(!g||(l.dataset.genres||'').split('|').includes(g))
+  &&(!nv||!l.classList.contains('vu')&&l.dataset.nonvu!=='0')));
+ if(tri){const c=CLES[tri.value]||CLES.titre,ul=document.getElementById('l');
+  [...lis].sort((a,b)=>{const x=c(a),y=c(b);return x<y?-1:x>y?1:0}).forEach(l=>ul.appendChild(l));
+  try{localStorage.setItem('filtres_{kind}',JSON.stringify({t:tri.value,g:genre?genre.value:'',n:!!nv}))}catch(e){}}}
+if(tri){try{const f=JSON.parse(localStorage.getItem('filtres_{kind}')||'{}');if(f.t)tri.value=f.t;
+  if(genre&&f.g&&[...genre.options].some(o=>o.value===f.g))genre.value=f.g;nonvus.checked=!!f.n}catch(e){}
+ for(const el of [tri,genre,nonvus])if(el)el.onchange=appliquer;appliquer()}
+q.oninput=appliquer;
 {const j=new URLSearchParams(location.search).get('jouer');  // venu de l'accueil : lancer la lecture
  if(j!==null){const i=lis.findIndex(l=>l.dataset.id===j);if(i>=0)play(i)}}

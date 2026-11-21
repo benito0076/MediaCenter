@@ -96,24 +96,28 @@ ES = {
     "Sous-titres (à distance)": "Subtítulos (a distancia)", "🔊 Sur l’ampli": "🔊 En el amplificador",
     "Pistes audio converties : ": "Pistas de audio convertidas: ", "🗑 Vider le cache audio": "🗑 Vaciar la caché de audio",
     "Lire juste après": "Reproducir a continuación", "Ajouter à la file d'attente": "Añadir a la cola", "Vu / pas vu": "Visto / no visto",
-    "épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus": "vistos",
     "▶ Reprendre": "▶ Seguir viendo", "⏭ Épisodes suivants": "⏭ Próximos episodios", "🆕 Ajoutés récemment": "🆕 Añadidos recientemente",
     "Rien pour l’instant : lance un film ou une série, ils apparaîtront ici.":
         "Nada por ahora: pon una película o una serie y aparecerán aquí.",
-    "Français": "Francés", "Anglais": "Inglés", "Espagnol": "Español", "Allemand": "Alemán", "Italien": "Italiano",
-    "Portugais": "Portugués", "Intégrés": "Integrados", "Piste": "Pista", "Sous-titres": "Subtítulos",
     "Ouvrir le Media Center": "Abrir Media Center", "Démarrer avec Windows": "Iniciar con Windows", "Quitter": "Salir",
     "Premier lancement : choisis tes dossiers de films, de séries et de musique.\n(Annuler pour passer un dossier.)":
         "Primer inicio: elige tus carpetas de películas, series y música.\n(Cancelar para omitir una carpeta.)",
     "Dossier de films": "Carpeta de películas", "Dossier de séries TV": "Carpeta de series", "Dossier de musique": "Carpeta de música",
-    "Langue : Español": "Idioma: Français", "🌐 Español": "🌐 Français",
+    "Langue : Español": "Idioma: Français", "Trier ": "Ordenar ", ">Titre<": ">Título<",
+    ">Ajoutés récemment<": ">Añadidas recientemente<", "Année (récents)": "Año (recientes)", "Année (anciens)": "Año (antiguas)",
+    "Genre <": "Género <", ">Tous<": ">Todos<", " Non vus": " No vistas", "🌐 Español": "🌐 Français",
 }
+# Mots isolés : seulement via tr() sur des textes précis (jamais dans traduire() : « vu » est aussi un nom de classe
+# dans le JavaScript, « Action » est dans setActionHandler…).
+MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus": "vistos", "Français": "Francés",
+           "Anglais": "Inglés", "Espagnol": "Español", "Allemand": "Alemán", "Italien": "Italiano", "Portugais": "Portugués",
+           "Intégrés": "Integrados", "Piste": "Pista", "Sous-titres": "Subtítulos"}
 _MOTIF_ES = re.compile("|".join(re.escape(k) for k in sorted(ES, key=len, reverse=True)))
 
 
 def tr(texte):
     """Texte de l'interface dans la langue choisie."""
-    return ES.get(texte, texte) if LANGUE[0] == "es" else texte
+    return ES.get(texte, MOTS_ES.get(texte, texte)) if LANGUE[0] == "es" else texte
 
 
 def traduire(texte):
@@ -1014,7 +1018,27 @@ def choisir(resultats, annee):  # format iTunes
     r = meilleur(resultats, annee, "releaseDate")
     return {"titre": r.get("trackName") or r.get("collectionName", ""), "annee": r.get("releaseDate", "")[:4],
             "resume": r.get("longDescription") or r.get("shortDescription", ""),
-            "affiche": r.get("artworkUrl100", "").replace("100x100", "600x600")}
+            "affiche": r.get("artworkUrl100", "").replace("100x100", "600x600"),
+            "genres": [r["primaryGenreName"]] if r.get("primaryGenreName") else []}
+
+
+# Genres TMDB (identifiants fixes) -> noms ; traduits en espagnol à l'affichage (GENRES_ES, à part de ES :
+# « Action » apparaît dans le code JavaScript, il ne doit pas passer par traduire()).
+GENRES_TMDB = {28: "Action", 12: "Aventure", 16: "Animation", 35: "Comédie", 80: "Crime", 99: "Documentaire", 18: "Drame",
+               10751: "Familial", 14: "Fantastique", 36: "Histoire", 27: "Horreur", 10402: "Musique", 9648: "Mystère",
+               10749: "Romance", 878: "Science-Fiction", 10770: "Téléfilm", 53: "Thriller", 10752: "Guerre", 37: "Western",
+               10759: "Action & Aventure", 10762: "Enfants", 10763: "Actualités", 10764: "Téléréalité",
+               10765: "Science-Fiction & Fantastique", 10766: "Feuilleton", 10767: "Talk-show", 10768: "Guerre & Politique"}
+GENRES_ES = {"Action": "Acción", "Aventure": "Aventura", "Animation": "Animación", "Comédie": "Comedia", "Crime": "Crimen",
+             "Documentaire": "Documental", "Drame": "Drama", "Familial": "Familia", "Fantastique": "Fantasía", "Histoire": "Historia",
+             "Horreur": "Terror", "Musique": "Música", "Mystère": "Misterio", "Science-Fiction": "Ciencia ficción",
+             "Téléfilm": "Película de TV", "Guerre": "Bélica", "Action & Aventure": "Acción y aventura", "Enfants": "Infantil",
+             "Actualités": "Noticias", "Téléréalité": "Reality", "Science-Fiction & Fantastique": "Ciencia ficción y fantasía",
+             "Feuilleton": "Telenovela", "Guerre & Politique": "Bélica y política"}
+
+
+def tr_genre(g):
+    return GENRES_ES.get(g, g) if LANGUE[0] == "es" else g
 
 
 def choisir_tmdb(resultats, annee, champ="release_date"):  # séries : champ="first_air_date"
@@ -1023,7 +1047,7 @@ def choisir_tmdb(resultats, annee, champ="release_date"):  # séries : champ="fi
     r = meilleur(resultats, annee, champ)
     return {"titre": r.get("title") or r.get("name", ""), "annee": (r.get(champ) or "")[:4], "resume": r.get("overview", ""),
             "affiche": "https://image.tmdb.org/t/p/w500" + r["poster_path"] if r.get("poster_path") else "",
-            "source": "tmdb"}
+            "genres": [GENRES_TMDB[g] for g in r.get("genre_ids", []) if g in GENRES_TMDB], "source": "tmdb"}
 
 
 def chercher_itunes(titre, annee, quoi="movie"):
@@ -1059,7 +1083,9 @@ def enrichir(cle=None):
     a_faire = [(Path(c).name, *nettoyer(Path(c).stem), "movie") for _, _, c in LIB["films"]]
     a_faire += [("serie:" + n, n, "", "tv") for n in dict.fromkeys(d for _, d, _ in LIB["series"])]
     # Avec TMDB, on repasse aussi sur ce qu'iTunes a trouvé (ou pas).
-    manquants = [x for x in a_faire if x[0] not in META or (cle and META[x[0]].get("source") != "tmdb")]
+    # Avec TMDB (rapide), on repasse aussi sur les fiches sans genre (mises en cache avant l'ajout des filtres).
+    manquants = [x for x in a_faire if x[0] not in META or (cle and (META[x[0]].get("source") != "tmdb"
+                                                                    or (META[x[0]] and "genres" not in META[x[0]])))]
     if manquants:
         print(f"Recherche des affiches ({'TMDB' if cle else 'iTunes'}) pour {len(manquants)} films/séries (en arrière-plan)…")
     for cle_meta, titre, annee, quoi in manquants:
@@ -1187,11 +1213,18 @@ PAGE = ((WEB_DIR / "page.html").read_text("utf-8").replace("{css}", (WEB_DIR / "
 NAV_JS = (WEB_DIR / "nav.js").read_text("utf-8")  # aussi sur l'accueil
 
 
+def attrs_filtres(m, annee, ajout):
+    """data-* pour trier / filtrer côté navigateur : année, date d'ajout, genres."""
+    return (f' data-annee="{html.escape(str(annee or ""))}" data-ajout="{int(ajout or 0)}"'
+            f' data-genres="{html.escape("|".join(m.get("genres", [])))}"')
+
+
 def carte_film(i, titre, chemin):
     m = META.get(Path(chemin).name) or {}
     t, a = m.get("titre") or titre, m.get("annee", "")
     img = f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche") else '<div class="ph">🎬</div>'
     attrs, extra = suivi(chemin)
+    attrs += attrs_filtres(m, a or nettoyer(Path(chemin).stem)[1], AJOUT.get(chemin))
     return (f'<li data-id="{i}" data-t="{html.escape(t)}{" (" + a + ")" if a else ""}" data-r="{html.escape(m.get("resume", ""))}"{attrs}>'
             f'{img}{html.escape(t)}<small>{a}</small>{extra}</li>')
 
@@ -1216,8 +1249,22 @@ def carte_serie(nom, nb):
     vus = sum(1 for _, d, c in LIB["series"] if d == nom and SUIVI.get(Path(c).name, {}).get("vu"))
     vus_txt = f" · {vus} {tr('vus' if vus > 1 else 'vu')}" if vus else ""
     img = f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche") else '<div class="ph">📺</div>'
-    return (f'<li data-href="/?k=series&amp;s={html.escape(quote(nom))}">{img}{html.escape(nom)}'
+    ajout = max((AJOUT.get(c, 0) for _t, d, c in LIB["series"] if d == nom), default=0)
+    attrs = attrs_filtres(m, m.get("annee", ""), ajout) + f' data-nonvu="{1 if vus < nb else 0}"'
+    return (f'<li data-href="/?k=series&amp;s={html.escape(quote(nom))}" data-t="{html.escape(nom)}"{attrs}>{img}{html.escape(nom)}'
             f'<small>{nb} {tr("épisodes" if nb > 1 else "épisode")}{vus_txt}</small></li>')
+
+
+def barre_filtres(kind):
+    """Tri, genre et « non vus » au-dessus de la grille (films, séries)."""
+    cles = [Path(c).name for _t, _d, c in LIB["films"]] if kind == "films" else ["serie:" + d for d in {d for _t, d, _c in LIB["series"]}]
+    genres = sorted({g for k in cles for g in (META.get(k) or {}).get("genres", [])}, key=lambda g: tr_genre(g).lower())
+    options = "".join(f'<option value="{html.escape(g)}">{html.escape(tr_genre(g))}</option>' for g in genres)
+    return traduire(f'<div id="filtres"><label>Trier <select id="tri"><option value="titre">Titre</option>'
+                    f'<option value="ajout">Ajoutés récemment</option><option value="annee">Année (récents)</option>'
+                    f'<option value="annee_asc">Année (anciens)</option></select></label>'
+                    + (f' <label>Genre <select id="genre"><option value="">Tous</option>{options}</select></label>' if genres else "")
+                    + ' <label><input type="checkbox" id="nonvus"> Non vus</label></div>')
 
 
 def page_serie(nom):
@@ -1351,6 +1398,7 @@ class Handler(BaseHTTPRequestHandler):
         intro, grid = '<h2 id="dt"></h2><p id="dr"></p>', kind == "films"
         if kind == "films":
             items = "".join(carte_film(i, *LIB[kind][i][::2]) for i in ordre(kind))
+            intro = barre_filtres("films") + intro
         elif kind == "series" and "s" in qs:
             intro, items = page_serie(qs["s"][0])
         elif kind == "series":
@@ -1358,6 +1406,7 @@ class Handler(BaseHTTPRequestHandler):
             for _, d, _ in LIB["series"]:
                 nb[d] = nb.get(d, 0) + 1
             items, grid = "".join(carte_serie(n, c) for n, c in sorted(nb.items(), key=lambda x: x[0].lower())), True
+            intro = barre_filtres("series") + intro
         else:
             premier = {}
             items = "".join(ligne_musique(i, *LIB[kind][i], premier) for i in ordre(kind))
