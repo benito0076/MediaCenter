@@ -501,13 +501,15 @@ ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.sh
 const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];let cur=-1;
 const vid='{kind}'!=='musique';let last=0;
 function envoi(l,data){navigator.sendBeacon('/suivi/{kind}/'+l.dataset.id,JSON.stringify(data))}
-function save(){if(!vid||cur<0||!(p.currentTime>1))return;const l=lis[cur];envoi(l,{t:p.currentTime,d:p.duration||0});
+function save(){if(!vid){if(cur>=0)try{localStorage.setItem('encours',JSON.stringify({k:lis[cur].dataset.k,t:p.currentTime}))}catch(e){}
+ return}  // musique : morceau en cours + position, pour la reprise
+ if(cur<0||!(p.currentTime>1))return;const l=lis[cur];envoi(l,{t:p.currentTime,d:p.duration||0});
  l.dataset.pos=p.currentTime;if(p.duration&&p.currentTime>.9*p.duration){l.classList.add('vu');l.dataset.pos=0}}
 p.ontimeupdate=()=>{if(Math.abs(p.currentTime-last)>10){last=p.currentTime;save()}};
 p.onpause=save;addEventListener('pagehide',save);
 document.querySelectorAll('.ck').forEach(b=>b.onclick=e=>{e.stopPropagation();const l=b.closest('li'),v=!l.classList.contains('vu');
  l.classList.toggle('vu',v);l.dataset.pos=0;const bar=l.querySelector('.bar');if(bar)bar.remove();envoi(l,{vu:v})});
-function play(i){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.remove('on'));
+function play(i,auto=true){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.remove('on'));
  cur=i;const l=lis[i];l.classList.add('on');last=+l.dataset.pos||0;
  if(vid&&last>5)p.addEventListener('loadedmetadata',()=>p.currentTime=last,{once:true});  // reprise
  p.src='/media/{kind}/'+l.dataset.id;
@@ -518,7 +520,7 @@ function play(i){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.
   st.forEach((s,n)=>{const t=document.createElement('track');
    Object.assign(t,{kind:'subtitles',label:s.nom,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});
    if(s.ass)t.dataset.ass='/ass/{kind}/'+l.dataset.id+'/'+n;p.appendChild(t)});setTimeout(majAss,300)});
- p.play().catch(()=>{});  // interrompu par un changement de morceau : normal
+ if(auto)p.play().catch(()=>{});  // interrompu par un changement de morceau : normal
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
 // Sous-titres .ass : rendu stylé par JASSUB par-dessus la vidéo ; la piste WebVTT simple reste en secours.
@@ -572,7 +574,10 @@ if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagati
  // Restauration : par identifiant stable ; les morceaux disparus depuis sont ignorés.
  try{const par=new Map(lis.map((l,i)=>[l.dataset.k,i]));
   file=JSON.parse(localStorage.getItem('file')||'[]').map(k=>par.get(k)).filter(i=>i!==undefined)}catch(e){file=[]}
- majFile()}
+ majFile();
+ // Reprise du morceau en cours : prêt à la bonne position, en pause (les navigateurs bloquent la lecture automatique).
+ try{const e=JSON.parse(localStorage.getItem('encours')||'null'),i=e?lis.findIndex(l=>l.dataset.k===e.k):-1;
+  if(i>=0){if(e.t>0)p.addEventListener('loadedmetadata',()=>{p.currentTime=e.t},{once:true});play(i,false)}}catch(e){}}
 function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.shift();majFile();return play(n)}
  if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
  let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)}
