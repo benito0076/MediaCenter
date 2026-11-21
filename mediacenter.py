@@ -297,6 +297,19 @@ def nettoyer_cache_audio(limite, demarrage=False, garder=None):
             pass
 
 
+def taille_cache_audio():
+    return sum(f.stat().st_size for f in AUDIO_DIR.glob("*.m4a")) if AUDIO_DIR.is_dir() else 0
+
+
+def vider_cache_audio():
+    """Bouton « Vider » : tout supprimer, sauf la piste en cours d'écoute (film joué en ce moment) et les conversions en cours."""
+    garder = None
+    if VIDEO and time.time() - RELEVE.get(VIDEO.get("dev"), 0) < 5 and VIDEO["id"] < len(LIB[VIDEO["kind"]]):  # page encore ouverte
+        garder = fichier_audio(LIB[VIDEO["kind"]][VIDEO["id"]][2], VIDEO.get("aui", 0))
+    nettoyer_cache_audio(0, garder=garder)
+    return taille_cache_audio()
+
+
 def fichier_audio(chemin, n):
     return AUDIO_DIR / (hashlib.sha1(f"{chemin}|{n}".encode()).hexdigest()[:16] + ".m4a")
 
@@ -639,6 +652,7 @@ ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;fon
 #vt{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#vt label{white-space:nowrap}
 #vtv{vertical-align:middle;width:140px;accent-color:#e50914}
 #pal{display:block;margin-top:8px;color:#aaa}#pae{color:#e50914}
+#pied{margin-top:32px;color:#777;font-size:14px}#pied .bt{margin-left:8px}
 #vts,#vta,#pas{background:#2a2a2a;color:#eee;border:0;border-radius:6px;padding:4px 6px;max-width:200px}
 #tc{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#tc .bt{font-size:18px}#tc label{white-space:nowrap}#tcv{vertical-align:middle;width:140px;accent-color:#e50914}
 #fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
@@ -653,7 +667,7 @@ ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.sh
 <a class="tab {films}" href="/?k=films">Films ({nfilms})</a><a class="tab {series}" href="/?k=series">Séries ({nseries})</a>
 <a class="tab {musique}" href="/?k=musique">Musique ({nmusique})</a>
 <input id="q" placeholder="Rechercher…" autofocus></header>
-<main>{player}{intro}<ul id="l" class="{grid}">{items}</ul></main>
+<main>{player}{intro}<ul id="l" class="{grid}">{items}</ul>{pied}</main>
 <script>
 const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];let cur=-1;
 const vid='{kind}'!=='musique';let last=0,proprio=false,geste=0;const APPAREIL=Math.random().toString(36).slice(2);  // proprio : cet appareil joue (ou a joué) le morceau en cours
@@ -732,6 +746,10 @@ if(vid){const pa=new Audio(),pas=document.getElementById('pas'),pal=document.get
   pal.hidden=auListe.length<2&&!(auListe[0]||{}).convertir;
   if((auListe[0]||{}).convertir)choisirAudio(0);  // son illisible par le navigateur (AC3, DTS…) : converti d'office
   if(window.etatVideo)etatVideo()}}
+{const cv=document.getElementById('cv');if(cv)cv.onclick=async()=>{
+ if(!confirm('Supprimer les pistes audio converties ? Elles seront reconverties si tu les rechoisis.'))return;
+ try{const r=await (await fetch('/cache-audio',{method:'POST'})).json();
+  document.getElementById('ct').textContent=Math.round(r.octets/1e6)+' Mo'+(r.octets?' (piste en cours d’écoute gardée)':'');cv.disabled=true}catch(e){}}}
 // ---- Films / séries : l'appareil qui joue publie son état et exécute les ordres ; les autres affichent la télécommande.
 if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
  const vt=document.getElementById('vt'),vtpp=document.getElementById('vtpp'),vtv=document.getElementById('vtv'),
@@ -997,12 +1015,15 @@ class Handler(BaseHTTPRequestHandler):
             + ' <label>🔊 <input id="vtv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label>'
             ' <label id="vtsl" hidden>💬 <select id="vts" aria-label="Sous-titres (à distance)"></select></label>'
             ' <label id="vtal" hidden>🔈 <select id="vta" aria-label="Piste audio (à distance)"></select></label></div>')
+        taille = taille_cache_audio() if kind != "musique" else 0
+        pied = (f'<p id="pied">Pistes audio converties : <span id="ct">{taille / 1e6:.0f} Mo</span> '
+                f'<button class="bt" id="cv">🗑 Vider le cache audio</button></p>' if taille else "")
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
         body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
-                .replace("{items}", items).replace("{kind}", kind)).encode()
+                .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1059,6 +1080,8 @@ class Handler(BaseHTTPRequestHandler):
             pass  # le navigateur a coupé (seek / pause) : normal
 
     def do_POST(self):
+        if urlparse(self.path).path == "/cache-audio":
+            return self.send_bytes(json.dumps({"octets": vider_cache_audio()}).encode(), "application/json")
         if urlparse(self.path).path == "/video":
             n = int(self.headers.get("Content-Length") or 0)
             try:
