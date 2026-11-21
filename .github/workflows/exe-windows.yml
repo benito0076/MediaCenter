@@ -1,0 +1,39 @@
+# Fabrique MediaCenter.exe sur une machine Windows (PyInstaller ne sait pas le faire depuis Linux),
+# le teste, et le met à disposition dans l'onglet Actions (artefact « MediaCenter-windows »).
+name: MediaCenter.exe (Windows)
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tests (sous Windows)
+        run: python test_mediacenter.py
+        continue-on-error: true
+      - name: Fabrication du .exe
+        run: |
+          pip install pyinstaller==6.11.1
+          pyinstaller --onefile --name MediaCenter --add-data "jassub;jassub" mediacenter.py
+      - name: Essai du .exe (démarrage, page, JASSUB embarqué)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force films | Out-Null
+          $p = Start-Process -FilePath dist\MediaCenter.exe -ArgumentList '--films','films','--hors-ligne','--port','8765' -PassThru -RedirectStandardOutput sortie.txt
+          Start-Sleep 8
+          $page = Invoke-WebRequest http://localhost:8765/ -UseBasicParsing
+          $js = Invoke-WebRequest http://localhost:8765/jassub/jassub.js -UseBasicParsing
+          Stop-Process $p
+          Get-Content sortie.txt
+          if ($page.Content -notmatch 'Media Center') { throw 'page absente' }
+          if ($js.Headers['Content-Type'] -notmatch 'javascript') { throw 'JASSUB absent du .exe' }
+          if (-not (Test-Path dist\mediacenter.json)) { throw 'config pas à côté du .exe' }
+          "OK : page servie, JASSUB embarqué, config à côté du .exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaCenter-windows
+          path: dist/MediaCenter.exe

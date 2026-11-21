@@ -12,12 +12,16 @@ from urllib.parse import urlparse, parse_qs, urlencode, quote
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-CONFIG = Path(__file__).with_name("mediacenter.json")
-CACHE = Path(__file__).with_name("mediacenter_cache.json")
-SUIVI_F = Path(__file__).with_name("mediacenter_suivi.json")
-FILE_F = Path(__file__).with_name("mediacenter_file.json")
+# .exe (PyInstaller) : données à côté du .exe, ressources (JASSUB) dans le dossier temporaire du .exe.
+GELE = getattr(sys, "frozen", False)
+BASE = Path(sys.executable).parent if GELE else Path(__file__).parent
+RESSOURCES = Path(getattr(sys, "_MEIPASS", BASE))
+CONFIG = BASE / "mediacenter.json"
+CACHE = BASE / "mediacenter_cache.json"
+SUIVI_F = BASE / "mediacenter_suivi.json"
+FILE_F = BASE / "mediacenter_file.json"
 FILE = []  # file d'attente musique commune à tous les appareils : ["dossier/fichier", …]
-ENCOURS_F = Path(__file__).with_name("mediacenter_encours.json")
+ENCOURS_F = BASE / "mediacenter_encours.json"
 ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "dev", "quand"}
 COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
 RELEVE = {}  # id d'appareil -> heure du dernier relevé de commandes (= page ouverte, joignable)
@@ -35,10 +39,10 @@ META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "serie:
 COVERS = {}  # dossier de musique -> image locale (cover.jpg…), ou morceau avec pochette intégrée, ou None
 IMG = {".jpg", ".jpeg", ".png", ".webp"}
 SUBS = {}  # chemin vidéo -> [fichiers .srt/.vtt/.ass]
-JASSUB_DIR = Path(__file__).with_name("jassub")  # rendu stylé des .ass (libass en WebAssembly), servi en local
-POLICES_DIR = Path(__file__).with_name("polices_cache")  # polices extraites des MKV
+JASSUB_DIR = RESSOURCES / "jassub"  # rendu stylé des .ass (libass en WebAssembly), servi en local
+POLICES_DIR = BASE / "polices_cache"  # polices extraites des MKV
 POLICES = {}  # chemin vidéo -> [fichiers de police]
-AUDIO_DIR = Path(__file__).with_name("audio_cache")  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
+AUDIO_DIR = BASE / "audio_cache"  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
 MPV_IPC = r"\\.\pipe\mediacenter-mpv" if os.name == "nt" else os.path.join(tempfile.gettempdir(), "mediacenter-mpv.sock")
@@ -1446,8 +1450,15 @@ def main():
         cfg.update({k: v for k, v in nouveau.items() if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
     dossiers = {k: cfg.get(k, []) for k in LIB}
+    if not any(dossiers.values()) and sys.stdin and sys.stdin.isatty():  # 1er lancement (double-clic sur le .exe)
+        print("Premier lancement : indique tes dossiers (copier-coller le chemin, ou Entrée pour passer).")
+        for k, nom in (("films", "films"), ("series", "séries TV"), ("musique", "musique")):
+            d = input(f"  Dossier de {nom} : ").strip().strip('"')
+            if d:
+                cfg[k] = dossiers[k] = [d]
+        CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
     if not any(dossiers.values()):
-        sys.exit('Indique tes dossiers : python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musique "D:\\Musique"')
+        sys.exit('Indique tes dossiers : MediaCenter --films "D:\\Films" --series "D:\\Series" --musique "D:\\Musique"')
     for d in sum(dossiers.values(), []):
         if not Path(d).is_dir():
             print(f"⚠ Dossier introuvable : {d}")
@@ -1482,10 +1493,25 @@ def main():
     print(f"Ouvre {url}  (Ctrl+C pour quitter, relance pour rescanner)")
     threading.Timer(1, webbrowser.open, [url]).start()
     try:
-        ThreadingHTTPServer((host, a.port), Handler).serve_forever()
+        serveur = ThreadingHTTPServer((host, a.port), Handler)
+    except OSError as e:
+        sys.exit(f"Port {a.port} indisponible ({e}) : le Media Center est peut-être déjà lancé.")
+    try:
+        serveur.serve_forever()
     except KeyboardInterrupt:
         pass
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.stdout.reconfigure(errors="replace")  # console Windows sans emoji : pas de plantage sur « ⚠ »
+    except (AttributeError, ValueError):
+        pass
+    try:
+        main()
+    except SystemExit as e:
+        if GELE and e.code not in (0, None):  # .exe lancé par double-clic : laisser lire le message avant fermeture
+            print(e.code)
+            input("Appuie sur Entrée pour fermer…")
+            raise SystemExit(1)
+        raise
