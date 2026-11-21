@@ -5,7 +5,8 @@ Usage :  python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musiq
 Les dossiers sont mémorisés dans mediacenter.json ; ensuite `python mediacenter.py` suffit.
 Affiches et résumés : TMDB si une clé est donnée (--tmdb CLE), sinon iTunes ; gardés dans mediacenter_cache.json.
 """
-import argparse, hashlib, html, json, math, mimetypes, os, re, shutil, socket, subprocess, sys, tempfile, threading, time, webbrowser
+import argparse, hashlib, hmac, html, json, math, mimetypes, os, re, shutil, socket, subprocess, sys, tempfile, threading, time, webbrowser
+from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, quote
@@ -43,6 +44,8 @@ JASSUB_DIR = RESSOURCES / "jassub"  # rendu stylé des .ass (libass en WebAssemb
 POLICES_DIR = BASE / "polices_cache"  # polices extraites des MKV
 POLICES = {}  # chemin vidéo -> [fichiers de police]
 AUDIO_DIR = BASE / "audio_cache"  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
+ACCES = {"jeton": None}  # PIN pour les autres appareils (--pin) : jeton attendu dans le cookie « mc »
+ECHECS = {}  # adresse -> [nombre d'erreurs de PIN, heure de la première]
 RESCAN = [lambda: 0]  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
@@ -310,6 +313,34 @@ def valider_externe(data):
             and piste in range(100)):
         raise ValueError("demande invalide")
     return kind, i, LIB[kind][i][2], t, piste
+
+
+def jeton_pin(pin, sel):
+    return hashlib.sha256(f"{sel}|{pin}".encode()).hexdigest()[:32]
+
+
+def trop_d_essais(ip, maintenant=None):
+    """Après 10 PIN faux en 5 minutes, l'adresse est bloquée jusqu'à la fin des 5 minutes."""
+    maintenant = maintenant or time.time()
+    n, depuis = ECHECS.get(ip, (0, maintenant))
+    if maintenant - depuis > 300:
+        ECHECS.pop(ip, None)
+        return False
+    return n >= 10
+
+
+def noter_echec(ip):
+    n, depuis = ECHECS.get(ip, (0, time.time()))
+    ECHECS[ip] = [n + 1, depuis]
+
+
+PAGE_PIN = """<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Media Center</title><style>body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#eee;display:grid;place-items:center;min-height:100vh}
+form{background:#1b1b1b;padding:24px;border-radius:12px;text-align:center}input{font-size:24px;width:8em;text-align:center;padding:8px;border-radius:8px;
+border:0;background:#2a2a2a;color:#eee;letter-spacing:4px}button{margin-top:12px;font-size:18px;padding:8px 20px;border:0;border-radius:8px;background:#e50914;color:#fff}
+p{color:#e50914;min-height:1.2em}</style><form method="post" action="/connexion"><h2>🎬 Media Center</h2>
+<label for="pin">Code d'accès</label><br><input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" autofocus required>
+<p>{erreur}</p><button>Entrer</button></form></html>"""
 
 
 def titre_lib(kind, i):
@@ -1186,7 +1217,27 @@ def page_serie(nom):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def autorise(self):
+        """Le PC lui-même passe toujours ; les autres appareils doivent avoir donné le PIN (s'il y en a un)."""
+        if not ACCES["jeton"] or self.client_address[0] in ("127.0.0.1", "::1"):
+            return True
+        c = SimpleCookie(self.headers.get("Cookie", ""))
+        return "mc" in c and hmac.compare_digest(c["mc"].value, ACCES["jeton"])
+
+    def page_pin(self, erreur="", code=200):
+        corps = PAGE_PIN.replace("{erreur}", erreur).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(corps)))
+        self.end_headers()
+        self.wfile.write(corps)
+
     def do_GET(self):
+        if not self.autorise():
+            return self.page_pin() if urlparse(self.path).path == "/" else self.send_error(401)
+        self.get_autorise()
+
+    def get_autorise(self):
         url = urlparse(self.path)
         # Seuls les fichiers indexés sont servis (par numéro) : pas de traversée de chemin possible.
         m = re.fullmatch(r"/(media/films|media/series|media/musique|cover)/(\d+)", url.path)
@@ -1358,6 +1409,26 @@ class Handler(BaseHTTPRequestHandler):
             pass  # le navigateur a coupé (seek / pause) : normal
 
     def do_POST(self):
+        if urlparse(self.path).path == "/connexion":
+            ip = self.client_address[0]
+            if trop_d_essais(ip):
+                return self.page_pin("Trop d'essais : réessaie dans 5 minutes.", 429)
+            n = int(self.headers.get("Content-Length") or 0)
+            pin = parse_qs(self.rfile.read(min(n, 1000)).decode(errors="replace")).get("pin", [""])[0]
+            if not ACCES["jeton"] or not hmac.compare_digest(jeton_pin(pin, ACCES["sel"]), ACCES["jeton"]):
+                noter_echec(ip)
+                time.sleep(1)  # ralentit les essais au hasard
+                return self.page_pin("Code incorrect.", 403)
+            ECHECS.pop(ip, None)
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.send_header("Set-Cookie", f"mc={ACCES['jeton']}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
+            return self.end_headers()
+        if not self.autorise():
+            return self.send_error(401)
+        self.post_autorise()
+
+    def post_autorise(self):
         if urlparse(self.path).path == "/externe":  # ouvre le film dans mpv/VLC sur le PC (passthrough vers l'ampli)
             n = int(self.headers.get("Content-Length") or 0)
             if not LECTEUR[0]:
@@ -1497,12 +1568,13 @@ def main():
                     help="mpv.exe ou vlc.exe pour la passthrough vers l'ampli (sinon trouvé tout seul) ; mémorisé")
     ap.add_argument("--cache-audio", type=float, metavar="GO",
                     help="taille max du cache des pistes audio converties, en Go (défaut 5) ; mémorisée")
+    ap.add_argument("--pin", metavar="CODE", help="code demandé aux autres appareils (TV, téléphone) ; « aucun » pour l'enlever ; mémorisé")
     ap.add_argument("--hors-ligne", action="store_true", help="ne pas chercher les affiches sur internet")
     a = ap.parse_args()
 
     cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
     nouveau = {"films": a.films, "series": a.series, "musique": a.musique, "tmdb": a.tmdb, "cache_audio": a.cache_audio,
-               "lecteur_externe": a.lecteur_externe}
+               "lecteur_externe": a.lecteur_externe, "pin": a.pin}
     if any(nouveau.values()):
         cfg.update({k: v for k, v in nouveau.items() if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
@@ -1548,6 +1620,12 @@ def main():
         threading.Thread(target=enrichir, args=(cfg.get("tmdb"),), daemon=True).start()
     threading.Thread(target=surveiller, args=(dossiers, not a.hors_ligne, cfg.get("tmdb")), daemon=True).start()
     RESCAN[0] = lambda: scan(dossiers)
+    if cfg.get("pin") and cfg["pin"] != "aucun":
+        cfg.setdefault("sel", __import__("secrets").token_hex(8))
+        CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+        ACCES.update(jeton=jeton_pin(cfg["pin"], cfg["sel"]), sel=cfg["sel"])
+    elif a.reseau:
+        print("ℹ Accès réseau sans code : n'importe qui sur ton Wi-Fi peut ouvrir le Media Center. Ajoute --pin 1234 pour en demander un.")
     host = "0.0.0.0" if a.reseau else "127.0.0.1"
     url = f"http://localhost:{a.port}/"
     print(f"Ouvre {url}  (Ctrl+C pour quitter, relance pour rescanner)")

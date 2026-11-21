@@ -262,4 +262,12 @@ with tempfile.TemporaryDirectory() as d:
         assert [x.name for x in Path(d).iterdir()] == ["recent"]
     finally:
         mediacenter.POLICES_DIR = ancien
+assert mediacenter.jeton_pin("1234", "sel") == mediacenter.jeton_pin("1234", "sel") != mediacenter.jeton_pin("1235", "sel")
+mediacenter.ECHECS.clear()
+for _ in range(9):
+    mediacenter.noter_echec("1.2.3.4")
+assert not mediacenter.trop_d_essais("1.2.3.4")
+mediacenter.noter_echec("1.2.3.4")
+assert mediacenter.trop_d_essais("1.2.3.4") and not mediacenter.trop_d_essais("5.6.7.8")
+assert not mediacenter.trop_d_essais("1.2.3.4", time.time() + 301)  # débloqué après 5 minutes
 print("OK")
