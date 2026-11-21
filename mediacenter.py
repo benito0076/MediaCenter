@@ -407,8 +407,9 @@ def commande_demarrage():
 def demarrage_auto(etat=None):
     """Lit (etat=None) ou règle le lancement au démarrage de Windows (clé « Run » de l'utilisateur, sans droits admin)."""
     import winreg
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
-                        winreg.KEY_READ | winreg.KEY_SET_VALUE) as k:
+    # CreateKeyEx ouvre la clé, ou la crée si elle n'existe pas encore (session Windows toute neuve)
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                            winreg.KEY_READ | winreg.KEY_SET_VALUE) as k:
         if etat is None:
             try:
                 return winreg.QueryValueEx(k, "MediaCenter")[0] == commande_demarrage()
