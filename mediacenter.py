@@ -20,7 +20,7 @@ EXT = {
 }
 LIB = {"films": [], "musique": []}  # chaque entrée : (titre, sous-dossier, chemin absolu)
 META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "album:<dossier>" -> {"affiche"} ; {} = introuvable
-COVERS = {}  # dossier de musique -> image locale (cover.jpg, folder.jpg…) ou None
+COVERS = {}  # dossier de musique -> image locale (cover.jpg…), ou morceau avec pochette intégrée, ou None
 IMG = {".jpg", ".jpeg", ".png", ".webp"}
 
 JUNK = re.compile(r"\b(2160p|1080p|720p|480p|4k|uhd|hdr|bluray|bdrip|brrip|webrip|web ?dl|web|hdtv|dvdrip|hdrip|"
@@ -55,6 +55,81 @@ def pochette_locale(dossier):
     return str((pref or imgs)[0]) if imgs else None
 
 
+def _id3(f):
+    h = f.read(10)
+    if h[:3] != b"ID3":
+        return None
+    ver, flags = h[3], h[5]
+    ss = lambda b: b[0] << 21 | b[1] << 14 | b[2] << 7 | b[3]  # entier « synchsafe »
+    data = f.read(ss(h[6:10]))
+    if flags & 0x80 and ver < 4:
+        data = data.replace(b"\xff\x00", b"\xff")
+    i = (ss(data[:4]) if ver == 4 else int.from_bytes(data[:4], "big") + 4) if flags & 0x40 else 0
+    idlen, hdr = (3, 6) if ver == 2 else (4, 10)
+    while i + hdr <= len(data) and data[i:i + idlen].strip(b"\0"):
+        fid, raw = data[i:i + idlen], data[i + idlen:i + hdr - (2 if ver > 2 else 0)]
+        taille = ss(raw) if ver == 4 else int.from_bytes(raw, "big")
+        corps, i = data[i + hdr:i + hdr + taille], i + hdr + taille
+        if fid not in (b"APIC", b"PIC"):
+            continue
+        j = (corps.index(b"\0", 1) + 1 if fid == b"APIC" else 4) + 1  # type MIME/format, puis type d'image
+        if corps[0] in (1, 2):  # description en UTF-16 : terminée par \0\0 aligné
+            while corps[j:j + 2] != b"\0\0":
+                j += 2
+            j += 2
+        else:
+            j = corps.index(b"\0", j) + 1
+        return corps[j:]
+
+
+def _flac(f):
+    if f.read(4) != b"fLaC":
+        return None
+    while True:
+        h = f.read(4)
+        if len(h) < 4:
+            return None
+        taille = int.from_bytes(h[1:4], "big")
+        if h[0] & 0x7F == 6:  # bloc PICTURE
+            b, i = f.read(taille), 4
+            i += 4 + int.from_bytes(b[i:i + 4], "big")  # type MIME
+            i += 4 + int.from_bytes(b[i:i + 4], "big") + 16  # description, dimensions
+            return b[i + 4:i + 4 + int.from_bytes(b[i:i + 4], "big")]
+        if h[0] & 0x80:
+            return None
+        f.seek(taille, 1)
+
+
+def _mp4(f, fin, chemin=(b"moov", b"udta", b"meta", b"ilst", b"covr", b"data")):
+    while f.tell() + 8 <= fin:
+        debut, h = f.tell(), f.read(8)
+        taille, typ = int.from_bytes(h[:4], "big"), h[4:]
+        if taille == 1:
+            taille = int.from_bytes(f.read(8), "big")
+        elif taille == 0:
+            taille = fin - debut
+        if taille < 8:
+            return None
+        if typ == chemin[0]:
+            if len(chemin) == 1:
+                return f.read(debut + taille - f.tell())[8:]  # 8 octets : type + langue
+            if typ == b"meta":
+                f.seek(4, 1)
+            return _mp4(f, debut + taille, chemin[1:])
+        f.seek(debut + taille)
+
+
+def pochette_integree(chemin):
+    """Pochette intégrée à un MP3 (ID3), FLAC ou M4A -> (octets, type MIME) ou None."""
+    ext = Path(chemin).suffix.lower()
+    try:
+        with open(chemin, "rb") as f:
+            img = _flac(f) if ext == ".flac" else _mp4(f, os.path.getsize(chemin)) if ext == ".m4a" else _id3(f)
+    except (OSError, ValueError, IndexError):  # fichier abîmé ou balises exotiques : pas de pochette
+        return None
+    return (img, "image/png" if img[:4] == b"\x89PNG" else "image/jpeg") if img else None
+
+
 def scan(dossiers):
     for kind, roots in dossiers.items():
         items = []
@@ -65,8 +140,11 @@ def scan(dossiers):
                     titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
                     dossier = str(p.parent.relative_to(root))
                     items.append((titre or p.stem, "" if dossier == "." else dossier, str(p)))
-                    if kind == "musique" and str(p.parent) not in COVERS:
-                        COVERS[str(p.parent)] = pochette_locale(p.parent)
+                    if kind == "musique":
+                        if str(p.parent) not in COVERS:
+                            COVERS[str(p.parent)] = pochette_locale(p.parent)
+                        if not COVERS[str(p.parent)] and pochette_integree(str(p)):
+                            COVERS[str(p.parent)] = str(p)
         LIB[kind] = sorted(items, key=lambda i: (i[1].lower(), i[0].lower()))
 
 
@@ -220,7 +298,12 @@ class Handler(BaseHTTPRequestHandler):
             if idx >= len(LIB[kind]):
                 return self.send_error(404)
             path = LIB[kind][idx][2]
-            return self.send_file(COVERS.get(str(Path(path).parent)) if m[1] == "cover" else path)
+            if m[1] != "cover":
+                return self.send_file(path)
+            cover = COVERS.get(str(Path(path).parent))
+            if cover and Path(cover).suffix.lower() in EXT["musique"]:
+                return self.send_bytes(*(pochette_integree(cover) or (b"", "")))
+            return self.send_file(cover)
         if url.path != "/":
             return self.send_error(404)
         kind = parse_qs(url.query).get("k", ["films"])[0]
@@ -241,6 +324,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_bytes(self, data, mime):
+        if not data:
+            return self.send_error(404)
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def send_file(self, path):
         if not path:
