@@ -38,7 +38,7 @@ SUBS = {}  # chemin vidéo -> [fichiers .srt/.vtt/.ass]
 JASSUB_DIR = Path(__file__).with_name("jassub")  # rendu stylé des .ass (libass en WebAssembly), servi en local
 POLICES_DIR = Path(__file__).with_name("polices_cache")  # polices extraites des MKV
 POLICES = {}  # chemin vidéo -> [fichiers de police]
-AUDIO_DIR = Path(__file__).with_name("audio_cache")  # pistes audio converties pour le navigateur (AAC stéréo)
+AUDIO_DIR = Path(__file__).with_name("audio_cache")  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
 CACHE_AUDIO_MAX = [5 * 1024 ** 3]  # taille max du cache audio (octets), réglable avec --cache-audio
 AUDIOS = {}  # chemin vidéo -> [{"nom", "convertir"}] (pistes audio, via ffprobe)
 EXTRACTIONS = {}  # fichier de sortie -> "en cours" | message d'erreur
@@ -257,20 +257,33 @@ def nom_piste(flux):
 
 
 def pistes_audio(chemin):
-    """Pistes audio d'une vidéo : [{"nom", "convertir"}] ; convertir = le navigateur ne sait pas la lire telle quelle."""
+    """Pistes audio d'une vidéo : [{"nom", "convertir", "canaux"}] ; convertir = le navigateur ne sait pas la lire telle quelle."""
     if not FFPROBE:
         return []
     if chemin not in AUDIOS:
         try:
             out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "a", "-show_entries",
-                                  "stream=codec_name:stream_tags=language,title", "-of", "json", chemin],
+                                  "stream=codec_name,channels:stream_tags=language,title", "-of", "json", chemin],
                                  capture_output=True, timeout=30).stdout
             flux = json.loads(out or b"{}").get("streams", [])
         except (OSError, ValueError, subprocess.TimeoutExpired):
             flux = []
-        AUDIOS[chemin] = [{"nom": f"{k + 1}. " + nom_piste(f).replace("Intégrés", "Piste") + f" ({f.get('codec_name', '?')})",
-                           "convertir": f.get("codec_name") in NON_LU} for k, f in enumerate(flux)]
+        AUDIOS[chemin] = [{"nom": f"{k + 1}. " + nom_piste(f).replace("Intégrés", "Piste")
+                                  + f" ({f.get('codec_name', '?')}{', ' + nom_canaux(f.get('channels', 2)) if f.get('channels', 2) > 2 else ''})",
+                           "convertir": f.get("codec_name") in NON_LU, "canaux": f.get("channels", 2)} for k, f in enumerate(flux)]
     return AUDIOS[chemin]
+
+
+def nom_canaux(n):
+    return {3: "2.1", 4: "4.0", 5: "5.0", 6: "5.1", 7: "6.1", 8: "7.1"}.get(n, f"{n} canaux")
+
+
+def options_conversion(canaux):
+    """AAC pour le navigateur : le surround est gardé (jusqu'au 5.1 ; le 6.1/7.1 est ramené en 5.1), sinon stéréo.
+    Le navigateur repasse lui-même en stéréo si l'ordinateur n'a que 2 haut-parleurs."""
+    if canaux > 2:
+        return ["-ac", "6" if canaux >= 6 else str(canaux), "-b:a", "384k"]
+    return ["-ac", "2", "-b:a", "192k"]
 
 
 def nettoyer_cache_audio(limite, demarrage=False, garder=None):
@@ -311,7 +324,8 @@ def vider_cache_audio():
 
 
 def fichier_audio(chemin, n):
-    return AUDIO_DIR / (hashlib.sha1(f"{chemin}|{n}".encode()).hexdigest()[:16] + ".m4a")
+    # « surround » : les anciennes conversions stéréo ne sont pas réutilisées (le nettoyage auto les supprimera)
+    return AUDIO_DIR / (hashlib.sha1(f"{chemin}|{n}|surround".encode()).hexdigest()[:16] + ".m4a")
 
 
 def extraire_audio(chemin, n):
@@ -334,9 +348,10 @@ def extraire_audio(chemin, n):
 def _convertir_audio(chemin, n, sortie):
     AUDIO_DIR.mkdir(exist_ok=True)
     tmp = sortie.with_suffix(".tmp.m4a")
-    try:  # ponytail: cache jamais vidé (~150 Mo par piste de film) ; supprimer audio_cache/ pour libérer la place
-        r = subprocess.run([FFMPEG, "-v", "error", "-y", "-i", chemin, "-map", f"0:a:{n}", "-vn", "-c:a", "aac", "-b:a", "192k",
-                            "-ac", "2", "-movflags", "+faststart", str(tmp)], capture_output=True, timeout=3600)
+    try:  # ~150 Mo par piste de film en stéréo, ~300 Mo en 5.1 ; cache limité par nettoyer_cache_audio
+        canaux = (pistes_audio(chemin)[n:n + 1] or [{}])[0].get("canaux", 2)
+        r = subprocess.run([FFMPEG, "-v", "error", "-y", "-i", chemin, "-map", f"0:a:{n}", "-vn", "-c:a", "aac",
+                            *options_conversion(canaux), "-movflags", "+faststart", str(tmp)], capture_output=True, timeout=3600)
         if r.returncode:
             raise OSError(r.stderr.decode(errors="replace")[-200:])
         tmp.replace(sortie)

@@ -201,4 +201,10 @@ with tempfile.TemporaryDirectory() as d:
         mediacenter.nettoyer_cache_audio(0)  # dossier absent : rien à faire, pas d'erreur
     finally:
         mediacenter.AUDIO_DIR = ancien
+assert mediacenter.options_conversion(2) == ["-ac", "2", "-b:a", "192k"]
+assert mediacenter.options_conversion(1) == ["-ac", "2", "-b:a", "192k"]
+assert mediacenter.options_conversion(6) == ["-ac", "6", "-b:a", "384k"]
+assert mediacenter.options_conversion(8) == ["-ac", "6", "-b:a", "384k"]  # 7.1 -> 5.1
+assert mediacenter.options_conversion(3) == ["-ac", "3", "-b:a", "384k"]
+assert (mediacenter.nom_canaux(6), mediacenter.nom_canaux(8), mediacenter.nom_canaux(10)) == ("5.1", "7.1", "10 canaux")
 print("OK")
