@@ -43,6 +43,7 @@ JASSUB_DIR = RESSOURCES / "jassub"  # rendu stylé des .ass (libass en WebAssemb
 POLICES_DIR = BASE / "polices_cache"  # polices extraites des MKV
 POLICES = {}  # chemin vidéo -> [fichiers de police]
 AUDIO_DIR = BASE / "audio_cache"  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
+RESCAN = [lambda: 0]  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
 MPV_IPC = r"\\.\pipe\mediacenter-mpv" if os.name == "nt" else os.path.join(tempfile.gettempdir(), "mediacenter-mpv.sock")
@@ -413,8 +414,8 @@ def commande_vlc(c):
             PILOTE["sti" if cmd == "soustitres" else "aui"] = int(v)
     elif cmd in ("jouer", "suivant"):
         lib, actuel = LIB[PILOTE["kind"]], PILOTE["id"]
-        i = int(c["k"]) if cmd == "jouer" else actuel + 1
-        if not 0 <= i < len(lib) or (cmd == "suivant" and lib[i][1] != lib[actuel][1]):
+        i = int(c["k"]) if cmd == "jouer" else episode_suivant(PILOTE["kind"], actuel)
+        if i is None or not 0 <= i < len(lib):
             return
         # start-time=0 : sinon la position de départ du lancement s'appliquerait aussi au nouveau fichier
         vlc_http(command="in_play", input=Path(lib[i][2]).resolve().as_uri(), option="start-time=0")
@@ -462,8 +463,8 @@ def commande_mpv(c):
             mpv_ipc([["set_property", "sid" if typ == "sub" else "aid", "no" if v == -1 else pistes[int(v)]["id"]]])
     elif cmd in ("jouer", "suivant"):
         lib, actuel = LIB[PILOTE["kind"]], PILOTE["id"]
-        i = int(c["k"]) if cmd == "jouer" else actuel + 1
-        if not 0 <= i < len(lib) or (cmd == "suivant" and lib[i][1] != lib[actuel][1]):  # fin de la série / du film
+        i = int(c["k"]) if cmd == "jouer" else episode_suivant(PILOTE["kind"], actuel)
+        if i is None or not 0 <= i < len(lib):  # fin de la série / du film
             return
         # Les options du lancement (position de départ, piste audio) s'appliqueraient aussi au nouveau fichier.
         mpv_ipc([["set_property", "options/start", "none"], ["set_property", "options/aid", "auto"],
@@ -626,13 +627,30 @@ def polices(chemin):
     return res
 
 
+def ordre(kind):
+    """Numéros de LIB[kind] dans l'ordre d'affichage (dossier puis titre). LIB ne fait que grandir (voir scan)."""
+    lib = LIB[kind]
+    return sorted(range(len(lib)), key=lambda i: (lib[i][1].lower(), lib[i][0].lower()))
+
+
+def episode_suivant(kind, actuel):
+    o = ordre(kind)
+    k = o.index(actuel) + 1
+    return o[k] if k < len(o) and LIB[kind][o[k]][1] == LIB[kind][actuel][1] else None
+
+
 def scan(dossiers):
+    """Ajoute les nouveaux fichiers à la bibliothèque et renvoie leur nombre.
+    Les numéros (positions dans LIB) ne changent jamais pendant que le programme tourne : une page ouverte ou une vidéo
+    en cours ne peut pas se retrouver sur un autre fichier. Un fichier supprimé reste listé jusqu'au redémarrage."""
+    nouveaux = 0
     for kind, roots in dossiers.items():
+        connus = {c for _, _, c in LIB[kind]}
         items = []
         for root in roots:
             root = Path(root)
             for p in root.rglob("*"):
-                if p.suffix.lower() in EXT[kind] and p.is_file():
+                if p.suffix.lower() in EXT[kind] and str(p) not in connus and p.is_file():
                     dossier = str(p.parent.relative_to(root))
                     dossier = "" if dossier == "." else dossier
                     if kind == "series":
@@ -645,16 +663,33 @@ def scan(dossiers):
                             COVERS[str(p.parent)] = pochette_locale(p.parent)
                         if not COVERS[str(p.parent)] and pochette_integree(str(p)):
                             COVERS[str(p.parent)] = str(p)
-        LIB[kind] = sorted(items, key=lambda i: (i[1].lower(), i[0].lower()))
-        if kind != "musique":
+        LIB[kind] += sorted(items, key=lambda i: (i[1].lower(), i[0].lower()))
+        nouveaux += len(items)
+        if kind != "musique":  # sous-titres revus pour toutes les vidéos : un .srt ajouté après coup est trouvé
             par_dossier = {}
-            for _, _, c in items:
+            for _, _, c in LIB[kind]:
                 par_dossier[str(Path(c).parent)] = par_dossier.get(str(Path(c).parent), 0) + 1
-            for _, _, c in items:
+            for _, _, c in LIB[kind]:
                 try:
                     SUBS[c] = sous_titres(Path(c), par_dossier[str(Path(c).parent)] == 1)
                 except OSError:
                     pass
+    return nouveaux
+
+
+def surveiller(dossiers, en_ligne, cle, minutes=5):
+    """Revoit les dossiers régulièrement : les nouveaux téléchargements apparaissent sans redémarrer."""
+    while True:
+        time.sleep(minutes * 60)
+        try:
+            n = scan(dossiers)
+        except OSError as e:
+            print(f"⚠ Analyse des dossiers impossible : {e}")
+            continue
+        if n:
+            print(f"{n} nouveau(x) fichier(s) ajouté(s).")
+            if en_ligne:
+                enrichir(cle)
 
 
 def meilleur(resultats, annee, champ_date):
@@ -878,7 +913,7 @@ ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.sh
 <header><b>🎬 Media Center</b>
 <a class="tab {films}" href="/?k=films">Films ({nfilms})</a><a class="tab {series}" href="/?k=series">Séries ({nseries})</a>
 <a class="tab {musique}" href="/?k=musique">Musique ({nmusique})</a>
-<input id="q" placeholder="Rechercher…" autofocus></header>
+<input id="q" placeholder="Rechercher…" autofocus><button class="bt" id="rs" title="Chercher les nouveaux fichiers" aria-label="Actualiser la bibliothèque">🔄</button></header>
 <main>{player}{intro}<ul id="l" class="{grid}">{items}</ul>{pied}</main>
 <script>
 const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];let cur=-1;
@@ -907,6 +942,9 @@ function play(i,auto=true){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.
  if(auto)p.play().catch(()=>{});  // interrompu par un changement de morceau : normal
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
+document.getElementById('rs').onclick=async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='⏳';
+ try{const r=await (await fetch('/rescan',{method:'POST'})).json();if(r.nouveaux)location.reload();else{b.textContent='✓';setTimeout(()=>{b.textContent='🔄';b.disabled=false},1500)}}
+ catch(x){b.textContent='🔄';b.disabled=false}};
 // Sous-titres .ass : rendu stylé par JASSUB par-dessus la vidéo ; la piste WebVTT simple reste en secours.
 let jas=null,assUrl=null;
 function assOff(){assUrl=null;if(jas){jas.destroy();jas=null}p.classList.remove('ass')}
@@ -1130,7 +1168,7 @@ def page_serie(nom):
     img = f'<img src="{html.escape(m["affiche"])}" alt="">' if m.get("affiche") else ""
     intro = f'<div class="show">{img}<div><h2 id="dt">{html.escape(nom)}</h2><p id="dr">{r}</p></div></div>'
     items = "".join(f'<li data-id="{i}" data-t="{html.escape(nom)} {html.escape(t)}" data-r="{r}"{a}>{html.escape(t)}{x}</li>'
-                    for i, (t, d, c) in enumerate(LIB["series"]) if d == nom for a, x in [suivi(c)])
+                    for i in ordre("series") for t, d, c in [LIB["series"][i]] if d == nom for a, x in [suivi(c)])
     return intro, items
 
 
@@ -1215,7 +1253,7 @@ class Handler(BaseHTTPRequestHandler):
         kind = kind if kind in LIB else "films"
         intro, grid = '<h2 id="dt"></h2><p id="dr"></p>', kind == "films"
         if kind == "films":
-            items = "".join(carte_film(i, t, c) for i, (t, _, c) in enumerate(LIB[kind]))
+            items = "".join(carte_film(i, *LIB[kind][i][::2]) for i in ordre(kind))
         elif kind == "series" and "s" in qs:
             intro, items = page_serie(qs["s"][0])
         elif kind == "series":
@@ -1225,7 +1263,7 @@ class Handler(BaseHTTPRequestHandler):
             items, grid = "".join(carte_serie(n, c) for n, c in sorted(nb.items(), key=lambda x: x[0].lower())), True
         else:
             premier = {}
-            items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
+            items = "".join(ligne_musique(i, *LIB[kind][i], premier) for i in ordre(kind))
         player = ('<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="pv" class="bt" title="Morceau précédent (ou début du morceau)">⏮ Précédent</button><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>'
                   '<div id="tc" hidden>🎛 <span id="tct"></span><br><button class="bt" data-c="precedent" aria-label="Précédent (à distance)">⏮</button>'
                   '<button class="bt" id="tcpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-c="suivant" aria-label="Suivant (à distance)">⏭</button>'
@@ -1338,6 +1376,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(500)
             self.send_response(204)
             return self.end_headers()
+        if urlparse(self.path).path == "/rescan":
+            try:
+                n = RESCAN[0]()
+            except OSError as e:
+                return self.send_error(500, str(e))
+            return self.send_bytes(json.dumps({"nouveaux": n}).encode(), "application/json")
         if urlparse(self.path).path == "/cache-audio":
             return self.send_bytes(json.dumps({"octets": vider_cache_audio()}).encode(), "application/json")
         if urlparse(self.path).path == "/video":
@@ -1488,6 +1532,8 @@ def main():
         print("ℹ Pour les sous-titres intégrés aux MKV, installe ffmpeg (Windows : winget install ffmpeg) puis relance.")
     if not a.hors_ligne:
         threading.Thread(target=enrichir, args=(cfg.get("tmdb"),), daemon=True).start()
+    threading.Thread(target=surveiller, args=(dossiers, not a.hors_ligne, cfg.get("tmdb")), daemon=True).start()
+    RESCAN[0] = lambda: scan(dossiers)
     host = "0.0.0.0" if a.reseau else "127.0.0.1"
     url = f"http://localhost:{a.port}/"
     print(f"Ouvre {url}  (Ctrl+C pour quitter, relance pour rescanner)")

@@ -232,4 +232,22 @@ etat = {"information": {"category": {"meta": {}, "Stream 0": {"Type": "Video"},
         "Stream 3": {"Type": "Subtitle", "Language": "French", "Codec": "Text subtitles (subt)"}}}}
 assert mediacenter.pistes_vlc(etat) == ([(1, "Français (A52 Audio)"), (2, "Anglais (Vorbis Audio)")], [(3, "Français")])
 assert mediacenter.pistes_vlc({}) == ([], [])
+# Analyse incrémentale : les nouveaux fichiers s'ajoutent sans changer les numéros existants ; affichage trié.
+with tempfile.TemporaryDirectory() as d:
+    D = Path(d)
+    (D / "Lost").mkdir()
+    (D / "Lost" / "Lost.S01E02.mkv").write_bytes(b"")
+    (D / "Zorro.2000.mkv").write_bytes(b"")
+    for k in mediacenter.LIB:
+        mediacenter.LIB[k] = []
+    assert mediacenter.scan({"series": [d]}) == 2
+    avant = list(mediacenter.LIB["series"])
+    (D / "Lost" / "Lost.S01E01.mkv").write_bytes(b"")
+    assert mediacenter.scan({"series": [d]}) == 1 and mediacenter.scan({"series": [d]}) == 0
+    assert mediacenter.LIB["series"][:2] == avant  # numéros existants inchangés
+    o = mediacenter.ordre("series")
+    assert [mediacenter.LIB["series"][i][:2] for i in o] == [("Zorro", "Divers"), ("S01E01", "Lost"), ("S01E02", "Lost")]
+    e1 = next(i for i, x in enumerate(mediacenter.LIB["series"]) if x[0] == "S01E01")
+    e2 = next(i for i, x in enumerate(mediacenter.LIB["series"]) if x[0] == "S01E02")
+    assert mediacenter.episode_suivant("series", e1) == e2 and mediacenter.episode_suivant("series", e2) is None
 print("OK")
