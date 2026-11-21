@@ -1580,6 +1580,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.lire_profil()
+        if urlparse(self.path).path in ("/manifest.json", "/icone-192.png", "/icone-512.png"):
+            return self.send_file(str(WEB_DIR / urlparse(self.path).path[1:]))  # sans le code : le navigateur les lit sans cookie
         if not self.autorise():
             return self.page_pin() if urlparse(self.path).path == "/" else self.send_error(401)
         self.get_autorise()
