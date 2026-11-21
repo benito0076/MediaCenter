@@ -1,5 +1,5 @@
 """python test_mediacenter.py"""
-from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode, maj_suivi, srt_vers_vtt, lire_texte, sous_titres, nom_sous_titre, nom_piste
+from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode, maj_suivi, vers_vtt, lire_texte, sous_titres, nom_sous_titre, nom_piste
 import os, tempfile
 
 assert nettoyer("Le.Film.2024.1080p.x264-GRP") == ("Le Film", "2024")
@@ -56,8 +56,8 @@ for mauvais in ({"t": float("nan")}, {"t": -1}, {}):
         pass
 
 srt = "1\r\n00:00:01,500 --> 0:00:03,000\r\n{\\an8}<i>Salut</i>\r\n"
-assert srt_vers_vtt(srt) == "WEBVTT\n\n1\n00:00:01.500 --> 00:00:03.000\n<i>Salut</i>\n"
-assert srt_vers_vtt("WEBVTT\n\nx") == "WEBVTT\n\nx"
+assert vers_vtt(srt) == "WEBVTT\n\n1\n00:00:01.500 --> 00:00:03.000\n<i>Salut</i>\n"
+assert vers_vtt("WEBVTT\n\nx") == "WEBVTT\n\nx"
 with tempfile.TemporaryDirectory() as d:
     from pathlib import Path
     D = Path(d)
@@ -83,4 +83,16 @@ assert nom_piste({}) == "Intégrés"
 import mediacenter
 mediacenter.FFPROBE = None
 assert mediacenter.pistes_integrees("film.mkv") == []
+
+ASS = """[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname\nStyle: Default,Arial\n\n[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:05.20,0:00:07.00,Default,,0,0,0,,Deuxième, avec virgule\\NNouvelle ligne
+Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,commentaire ignoré
+Dialogue: 0,0:00:01.50,0:00:03.00,Default,,0,0,0,,{\\an8\\fad(200,200)}{\\i1}Bonjour{\\i0} Naruto
+Dialogue: 0,0:00:02.00,0:00:03.00,Sign,,0,0,0,,{\\p1}m 0 0 l 100 0 100 100{\\p0}
+Dialogue: 0,1:02:03.00,1:02:04.00,Default,,0,0,0,,{\\k20}Ka{\\k30}ra\\hoke
+"""
+assert vers_vtt(ASS) == ("WEBVTT\n\n00:00:01.500 --> 00:00:03.000 line:0\n<i>Bonjour</i> Naruto\n\n"
+                         "00:00:05.200 --> 00:00:07.000\nDeuxième, avec virgule\nNouvelle ligne\n\n"
+                         "01:02:03.000 --> 01:02:04.000\nKara oke\n\n"), vers_vtt(ASS)
 print("OK")

@@ -162,7 +162,7 @@ def sous_titres(video, seule):
     dossiers = [video.parent] + [d for d in video.parent.iterdir()
                                  if d.is_dir() and d.name.lower() in ("subs", "subtitles", "sous-titres", "st")]
     return [str(f) for d in dossiers for f in sorted(d.iterdir())
-            if f.suffix.lower() in (".srt", ".vtt") and f.is_file()
+            if f.suffix.lower() in (".srt", ".vtt", ".ass", ".ssa") and f.is_file()
             and (seule or f.name.lower().startswith(video.stem.lower()))]
 
 
@@ -184,10 +184,46 @@ def lire_texte(chemin):
         return b.decode("cp1252", errors="replace")
 
 
-def srt_vers_vtt(texte):
+def ass_temps(t):
+    """'0:01:02.50' (centièmes) -> '00:01:02.500'"""
+    h, m, sec = t.strip().split(":")
+    return f"{int(h):02}:{int(m):02}:{float(sec):06.3f}"
+
+
+def ass_vers_vtt(texte):
+    """Sous-titres .ass/.ssa (animés) -> WebVTT : texte et italique gardés, styles/positions/karaoké perdus."""
+    champs, cues, dans_events = [], [], False
+    for ligne in texte.splitlines():
+        ligne = ligne.strip()
+        if ligne.startswith("["):
+            dans_events = ligne.lower() == "[events]"
+        elif dans_events and ligne.lower().startswith("format:"):
+            champs = [c.strip().lower() for c in ligne[7:].split(",")]
+        elif dans_events and champs and ligne.lower().startswith("dialogue:"):
+            v = dict(zip(champs, ligne[9:].split(",", len(champs) - 1)))
+            t = v.get("text", "")
+            haut = " line:0" if re.search(r"\\an[789]", t) else ""  # panneaux / notes en haut de l'écran
+            if re.search(r"\\p[1-9]", t):  # dessin vectoriel (panneaux typesettés) : illisible en texte
+                continue
+            t = re.sub(r"\{[^}]*\\i1[^}]*\}", "<i>", t)
+            t = re.sub(r"\{[^}]*\\i0?[^}0-9]*\}", "</i>", t)
+            t = re.sub(r"\{[^}]*\}", "", t).replace("\\N", "\n").replace("\\n", "\n").replace("\\h", " ").strip()
+            if t.replace("<i>", "").replace("</i>", "").strip():
+                try:
+                    cues.append((ass_temps(v["start"]), ass_temps(v["end"]) + haut, t))
+                except (KeyError, ValueError):
+                    continue
+    cues.sort(key=lambda c: c[0])
+    return "WEBVTT\n\n" + "".join(f"{a} --> {b}\n{t}\n\n" for a, b, t in cues)
+
+
+def vers_vtt(texte):
+    """.srt / .vtt / .ass -> WebVTT"""
     texte = texte.replace("\r\n", "\n").replace("\r", "\n")
     if texte.lstrip().startswith("WEBVTT"):
         return texte
+    if re.search(r"^\[events\]", texte, re.I | re.M):
+        return ass_vers_vtt(texte)
     texte = re.sub(r"\{\\[^}]*\}", "", texte)  # balises de style ASS ({\an8}…)
     texte = re.sub(r"(\d+):(\d{2}):(\d{2})[,.](\d{3})", lambda m: f"{int(m[1]):02}:{m[2]}:{m[3]}.{m[4]}", texte)
     return "WEBVTT\n\n" + texte
@@ -496,7 +532,7 @@ class Handler(BaseHTTPRequestHandler):
             n, ext, integ = int(m[4]), SUBS.get(chemin, []), pistes_integrees(chemin)
             try:
                 if n < len(ext):
-                    vtt = srt_vers_vtt(lire_texte(ext[n]))
+                    vtt = vers_vtt(lire_texte(ext[n]))
                 elif n - len(ext) < len(integ):
                     vtt = extraire_vtt(chemin, integ[n - len(ext)][1])
                 else:

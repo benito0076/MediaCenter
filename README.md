@@ -28,7 +28,9 @@ Les épisodes sont regroupés par série grâce au nom du fichier (`Breaking.Bad
 Films et épisodes reprennent là où tu les as arrêtés (barre rouge sous le titre). Passé 90 % (générique), ils sont marqués **vus** ✓ ; clique sur le ✓ pour cocher/décocher à la main. Le suivi est enregistré sur le PC (`mediacenter_suivi.json`), donc partagé entre le PC, la TV et le téléphone en mode `--reseau`.
 
 ## Sous-titres
-Les fichiers `.srt` / `.vtt` sont détectés automatiquement : même nom que la vidéo (`Film.2020.srt`, `Film.2020.fr.srt`, `Film.2020.en.srt`) ou, si la vidéo est seule dans son dossier, tout `.srt` du dossier et d'un sous-dossier `Subs/`. Le français est activé par défaut ; change de langue ou coupe-les avec le bouton du lecteur (⋮ → Sous-titres, ou CC). Les accents des vieux `.srt` (Windows-1252) sont gérés.
+Les fichiers `.srt` / `.vtt` / `.ass` / `.ssa` sont détectés automatiquement : même nom que la vidéo (`Film.2020.srt`, `Film.2020.fr.srt`, `Film.2020.en.srt`) ou, si la vidéo est seule dans son dossier, tout `.srt` du dossier et d'un sous-dossier `Subs/`. Le français est activé par défaut ; change de langue ou coupe-les avec le bouton du lecteur (⋮ → Sous-titres, ou CC). Les accents des vieux `.srt` (Windows-1252) sont gérés.
+
+**Animés (`.ass`)** : le texte, l'italique et les panneaux placés en haut de l'écran sont gardés ; les polices, couleurs, positions précises et effets karaoké des fansubs ne le sont pas (le navigateur n'affiche que du texte simple).
 
 **Sous-titres intégrés aux MKV** (et MP4) : installer [ffmpeg](https://ffmpeg.org) une fois, puis relancer :
 ```
