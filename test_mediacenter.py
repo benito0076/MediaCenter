@@ -340,4 +340,21 @@ assert not dangereuses, dangereuses
 m.LANGUE[0] = "es"
 assert "'vu'" in mediacenter.traduire(code) and 'id="nonvus"' in mediacenter.traduire('<input type="checkbox" id="nonvus"> Non vus')
 m.LANGUE[0] = "fr"
+# Profils : suivi séparé ; un profil inconnu (cookie trafiqué) retombe sur « Principal »
+m.PROFILS[:] = ["Ana"]
+m.ACTUEL.profil = "Ana"
+assert m.S() is not m.SUIVI and m.S() == {} and m.fichier_suivi("Ana") != m.SUIVI_F
+m.S()["x.mkv"] = {"vu": True}
+m.ACTUEL.profil = "Intrus"
+assert m.S() is m.SUIVI
+m.ACTUEL.profil = ""
+assert "x.mkv" not in m.S()
+assert m.valider_profil("  Lucía  ") == "Lucía"
+for mauvais in ("", "Principal", "a/b", "x" * 31, "<script>"):
+    try:
+        m.valider_profil(mauvais)
+        raise AssertionError(mauvais)
+    except ValueError:
+        pass
+m.PROFILS[:] = []
 print("OK")

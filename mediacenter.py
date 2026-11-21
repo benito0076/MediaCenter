@@ -9,7 +9,7 @@ import argparse, hashlib, hmac, html, json, math, mimetypes, os, re, shutil, soc
 from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, urlencode, quote
+from urllib.parse import urlparse, parse_qs, urlencode, quote, unquote
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -28,7 +28,11 @@ COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
 RELEVE = {}  # id d'appareil -> heure du dernier relevé de commandes (= page ouverte, joignable)
 ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer", "volume", "deplacer", "soustitres", "audio"}
 VIDEO = {}  # film/épisode en cours (pour la télécommande) : {"kind", "id", "titre", "t", "d", "lecture", "vol", "page", "dev", "quand"}
-SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
+SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}  (profil « Principal »)
+# Profils : chacun son « déjà vu », sa reprise et son accueil (fichier mediacenter_suivi_<…>.json) ; choisi par cookie.
+PROFILS = []  # noms des profils en plus de « Principal »
+SUIVIS = {"": SUIVI}
+ACTUEL = threading.local()  # profil de la requête en cours
 VERROU = threading.Lock()
 EXT = {
     "films": {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v"},
@@ -103,7 +107,8 @@ ES = {
     "Premier lancement : choisis tes dossiers de films, de séries et de musique.\n(Annuler pour passer un dossier.)":
         "Primer inicio: elige tus carpetas de películas, series y música.\n(Cancelar para omitir una carpeta.)",
     "Dossier de films": "Carpeta de películas", "Dossier de séries TV": "Carpeta de series", "Dossier de musique": "Carpeta de música",
-    "Langue : Español": "Idioma: Français", "Trier ": "Ordenar ", ">Titre<": ">Título<",
+    "Langue : Español": "Idioma: Français", "Nouveau profil…": "Nuevo perfil…", "Profil": "Perfil",
+    "Nom du nouveau profil :": "Nombre del nuevo perfil:", "Trier ": "Ordenar ", ">Titre<": ">Título<",
     ">Ajoutés récemment<": ">Añadidas recientemente<", "Année (récents)": "Año (recientes)", "Année (anciens)": "Año (antiguas)",
     "Genre <": "Género <", ">Tous<": ">Todos<", " Non vus": " No vistas", "🌐 Español": "🌐 Français",
 }
@@ -413,6 +418,39 @@ def noter_echec(ip):
 PAGE_PIN = (WEB_DIR / "pin.html").read_text("utf-8")  # page du code d'accès
 
 
+def profil_actif():
+    p = getattr(ACTUEL, "profil", "")
+    return p if p in PROFILS else ""
+
+
+def fichier_suivi(profil):
+    return SUIVI_F if not profil else BASE / f"mediacenter_suivi_{hashlib.sha1(profil.encode()).hexdigest()[:10]}.json"
+
+
+def S():
+    """Suivi (déjà vu, reprise) du profil de la requête en cours."""
+    p = profil_actif()
+    if p not in SUIVIS:
+        f = fichier_suivi(p)
+        SUIVIS[p] = json.loads(f.read_text("utf-8")) if f.exists() else {}
+    return SUIVIS[p]
+
+
+def valider_profil(nom):
+    nom = nom.strip()
+    if not (0 < len(nom) <= 30 and re.fullmatch(r"[\w .'-]+", nom) and nom != "Principal"):
+        raise ValueError("nom de profil invalide")
+    return nom
+
+
+def html_profils():
+    actif = profil_actif()
+    options = [("", "👤 Principal")] + [(p, "👤 " + p) for p in PROFILS] + [("__nouveau", "➕ " + tr("Nouveau profil…"))]
+    return (f'<select id="pf" title="{tr("Profil")}" data-question="{html.escape(tr("Nom du nouveau profil :"))}">'
+            + "".join(f'<option value="{html.escape(v)}"{" selected" if v == actif else ""}>{html.escape(t)}</option>'
+                      for v, t in options) + "</select>")
+
+
 def accueil():
     """Rangées de l'accueil : [(titre, [(lien, affiche, titre, sous-titre, % vu)])]."""
     nom = lambda kind, i: Path(LIB[kind][i][2]).name
@@ -421,24 +459,24 @@ def accueil():
                             else f"/?k=series&s={quote(LIB[kind][i][1])}&jouer={i}")
 
     def carte(kind, i, sous=""):
-        e = SUIVI.get(nom(kind, i), {})
+        e = S().get(nom(kind, i), {})
         pct = int(100 * e["t"] / e["d"]) if e.get("t") and e.get("d") else 0
-        titre = LIB[kind][i][0] if kind == "films" else LIB[kind][i][1]
+        titre = (META.get(nom(kind, i)) or {}).get("titre") or LIB[kind][i][0] if kind == "films" else LIB[kind][i][1]
         return lien(kind, i), affiche(kind, i), titre, sous or ("" if kind == "films" else LIB[kind][i][0]), pct
 
     videos = [(k, i) for k in ("films", "series") for i in range(len(LIB[k]))]
-    reprendre = sorted(((SUIVI[nom(k, i)].get("quand", 0), k, i) for k, i in videos
-                        if SUIVI.get(nom(k, i), {}).get("t") and not SUIVI[nom(k, i)].get("vu")), reverse=True)
+    reprendre = sorted(((S()[nom(k, i)].get("quand", 0), k, i) for k, i in videos
+                        if S().get(nom(k, i), {}).get("t") and not S()[nom(k, i)].get("vu")), reverse=True)
     deja = {(k, i) for _, k, i in reprendre}
     suivants, eps = [], {}
     for i in ordre("series"):
         eps.setdefault(LIB["series"][i][1], []).append(i)
     for liste in eps.values():
-        vus = [n for n, i in enumerate(liste) if SUIVI.get(nom("series", i), {}).get("vu")]
+        vus = [n for n, i in enumerate(liste) if S().get(nom("series", i), {}).get("vu")]
         if vus and max(vus) + 1 < len(liste):
             i = liste[max(vus) + 1]
-            if ("series", i) not in deja and not SUIVI.get(nom("series", i), {}).get("vu"):
-                suivants.append((SUIVI[nom("series", liste[max(vus)])].get("quand", 0), i))
+            if ("series", i) not in deja and not S().get(nom("series", i), {}).get("vu"):
+                suivants.append((S()[nom("series", liste[max(vus)])].get("quand", 0), i))
     recents, series_vues = [], set()
     for k, i in sorted(videos, key=lambda x: AJOUT.get(LIB[x[0]][x[1]][2], 0), reverse=True):
         if k == "series":  # une seule carte par série
@@ -1140,7 +1178,7 @@ def maj_suivi(e, data):
 
 def suivi(chemin):
     """(attributs du <li>, HTML de la barre de progression + case « vu »)"""
-    e = SUIVI.get(Path(chemin).name, {})
+    e = S().get(Path(chemin).name, {})
     pct = min(100, int(100 * e["t"] / e["d"])) if e.get("t") and e.get("d") else 0
     attrs = f' data-pos="{e.get("t", 0)}"' + (' class="vu"' if e.get("vu") else "")
     return attrs, (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + f'<b class="ck" title="{tr("Vu / pas vu")}">✓</b>'
@@ -1246,7 +1284,7 @@ QA = "Ajouter à la file d'attente"
 
 def carte_serie(nom, nb):
     m = META.get("serie:" + nom) or {}
-    vus = sum(1 for _, d, c in LIB["series"] if d == nom and SUIVI.get(Path(c).name, {}).get("vu"))
+    vus = sum(1 for _, d, c in LIB["series"] if d == nom and S().get(Path(c).name, {}).get("vu"))
     vus_txt = f" · {vus} {tr('vus' if vus > 1 else 'vu')}" if vus else ""
     img = f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche") else '<div class="ph">📺</div>'
     ajout = max((AJOUT.get(c, 0) for _t, d, c in LIB["series"] if d == nom), default=0)
@@ -1293,7 +1331,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(corps)
 
+    def lire_profil(self):
+        c = SimpleCookie(self.headers.get("Cookie", ""))
+        ACTUEL.profil = unquote(c["profil"].value) if "profil" in c else ""
+
     def do_GET(self):
+        self.lire_profil()
         if not self.autorise():
             return self.page_pin() if urlparse(self.path).path == "/" else self.send_error(401)
         self.get_autorise()
@@ -1430,7 +1473,7 @@ class Handler(BaseHTTPRequestHandler):
                         f'<button class="bt" id="cv">🗑 Vider le cache audio</button></p>' if taille else "")
         player = traduire(player)
         body = gabarit()
-        body = body.replace("{accueil}", "")
+        body = body.replace("{accueil}", "").replace("{profils}", html_profils())
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
@@ -1444,7 +1487,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def page_accueil(self):
-        body = gabarit()[:gabarit().index("<main>")].replace("{accueil}", "on")
+        body = gabarit()[:gabarit().index("<main>")].replace("{accueil}", "on").replace("{profils}", html_profils())
         for k in LIB:
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "").replace("{n" + k + "}", str(n))
@@ -1525,6 +1568,7 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             pass  # le navigateur a coupé (seek / pause) : normal
 
     def do_POST(self):
+        self.lire_profil()
         if urlparse(self.path).path == "/connexion":
             ip = self.client_address[0]
             if trop_d_essais(ip):
@@ -1574,6 +1618,20 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             except OSError as e:
                 print(f"⚠ Lecteur externe impossible à lancer : {e}")
                 return self.send_error(500)
+            self.send_response(204)
+            return self.end_headers()
+        if urlparse(self.path).path == "/profils":  # « ➕ Nouveau profil »
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                nom = valider_profil(self.rfile.read(min(n, 200)).decode("utf-8", errors="replace"))
+            except ValueError:
+                return self.send_error(400)
+            with VERROU:
+                if nom not in PROFILS:
+                    PROFILS.append(nom)
+                    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+                    cfg["profils"] = PROFILS
+                    CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
             self.send_response(204)
             return self.end_headers()
         if urlparse(self.path).path == "/langue":  # bouton 🌐 : bascule français / espagnol (mémorisé)
@@ -1670,8 +1728,9 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
         try:
             data = json.loads(self.rfile.read(n))
             with VERROU:
-                SUIVI[nom] = {**maj_suivi(SUIVI.get(nom, {}), data), "quand": time.time()}  # « Reprendre » : plus récent d'abord
-                SUIVI_F.write_text(json.dumps(SUIVI, ensure_ascii=False), "utf-8")
+                suivi_p = S()
+                suivi_p[nom] = {**maj_suivi(suivi_p.get(nom, {}), data), "quand": time.time()}  # « Reprendre » : plus récent d'abord
+                fichier_suivi(profil_actif()).write_text(json.dumps(suivi_p, ensure_ascii=False), "utf-8")
         except (ValueError, TypeError, KeyError, AttributeError):
             return self.send_error(400)
         self.send_response(204)
@@ -1712,6 +1771,7 @@ def main():
         cfg.update({k: v for k, v in nouveau.items() if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
     LANGUE[0] = cfg.get("langue") or langue_systeme()
+    PROFILS[:] = [p for p in cfg.get("profils", []) if isinstance(p, str)]
     dossiers = {k: cfg.get(k, []) for k in LIB}
     if not any(dossiers.values()) and sys.stdin and sys.stdin.isatty():  # 1er lancement (double-clic sur le .exe)
         print("Premier lancement : indique tes dossiers (copier-coller le chemin, ou Entrée pour passer).")
