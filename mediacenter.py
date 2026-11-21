@@ -916,18 +916,24 @@ def appliquer_maj():
             shutil.copyfileobj(r, f)
         if neuf.stat().st_size < 1_000_000:
             raise OSError("téléchargement incomplet")
-        bat = exe.with_name("maj_mediacenter.bat")
-        pere = os.getppid()  # le lanceur PyInstaller, qui garde le .exe ouvert jusqu'à la fin
-        # (ping comme minuterie : « timeout » refuse de tourner sans console ; on cherche le NOM du programme sur la ligne
-        # du processus, pas son numéro, qui peut apparaître par hasard ailleurs, par exemple dans la mémoire utilisée)
+        bat, journal = exe.with_name("maj_mediacenter.bat"), exe.with_name("maj_mediacenter.log")
+        # Le .exe reste verrouillé tant que le Media Center tourne : on retente le remplacement chaque seconde
+        # (ping sert de minuterie : « timeout » refuse de tourner sans console), puis on relance. Chaque étape est notée.
         bat.write_text(f"""@echo off
 chcp 65001 >nul
-:attente
-tasklist /FI "PID eq {pere}" /NH | find /I "{exe.name}" >nul && (ping -n 2 127.0.0.1 >nul & goto attente)
+echo debut %date% %time% > "{journal}"
 set /a essais=0
 :copie
-move /y "{neuf}" "{exe}" >nul || (set /a essais+=1 & ping -n 2 127.0.0.1 >nul & if %essais% lss 20 goto copie)
+move /y "{neuf}" "{exe}" >nul 2>&1 && goto relance
+set /a essais+=1
+if %essais% geq 60 (echo echec du remplacement >> "{journal}" & goto fin)
+ping -n 2 127.0.0.1 >nul
+goto copie
+:relance
+echo remplace apres %essais% essai(s) >> "{journal}"
 start "" "{exe}"
+echo relance >> "{journal}"
+:fin
 del "%~f0"
 """, encoding="utf-8")
         subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,

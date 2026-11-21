@@ -84,6 +84,7 @@ jobs:
           for ($i = 0; $i -lt 30; $i++) { Start-Sleep 2; if ($p.HasExited -and -not (Test-Path maj\appli\maj_mediacenter.bat)) { try { Invoke-WebRequest http://localhost:8765/ -UseBasicParsing | Out-Null; $ok = $true; break } catch {} } }
           Get-ChildItem maj\appli | Format-Table Name, Length
           Get-Content maj\appli\mediacenter.log
+          if (Test-Path maj\appli\maj_mediacenter.log) { Get-Content maj\appli\maj_mediacenter.log }
           Get-Process MediaCenter -ErrorAction SilentlyContinue | Stop-Process -Force
           Stop-Process $srv
           if (-not $p.HasExited) { throw 'l ancien Media Center ne s est pas fermé' }
