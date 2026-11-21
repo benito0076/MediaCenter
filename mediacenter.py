@@ -482,7 +482,7 @@ ul.grid .ck{position:absolute;top:12px;right:12px;background:#000b;border-radius
 ul:not(.grid) li{display:flex;align-items:center;gap:12px}
 ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;font-size:20px;margin:0;flex:none}
 .bt{margin:8px 6px 0 0;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
-#sv{color:#eee}.bt[aria-pressed=true]{background:#e50914;color:#fff}
+#sv,#pv{color:#eee}.bt[aria-pressed=true]{background:#e50914;color:#fff}
 #pc{width:220px;height:220px;object-fit:cover;border-radius:8px;display:block;margin-bottom:12px}
 ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.show img{width:140px;border-radius:6px;flex:none}
 .ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;
@@ -533,7 +533,7 @@ if(vid){p.textTracks.onchange=majAss;const vw=document.getElementById('vw'),
  document.getElementById('fs').onclick=fs;p.ondblclick=fs}
 lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:play(i));
 // Musique : aléatoire (chaque morceau visible une fois) ; bouton répéter : non → tout → un seul morceau → non.
-const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=0,joues=new Set();
+const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=0,joues=new Set(),hist=[];  // hist : morceaux joués en aléatoire, pour « précédent »
 try{alea=localStorage.getItem('alea')==='1';repete=Math.min(2,+localStorage.getItem('repete')||0)}catch(e){}
 const REPETE=['🔁 Répéter','🔁 Répéter tout','🔂 Répéter 1'];
 function majRepete(){rp.textContent=REPETE[repete];rp.setAttribute('aria-pressed',repete>0);p.loop=repete===2;  // boucle native
@@ -544,13 +544,19 @@ function hasard(){if(cur>=0)joues.add(cur);let v=visibles().filter(i=>!joues.has
  return v.length?v[Math.floor(Math.random()*v.length)]:-1}
 function bascule(b,cle,val){b.setAttribute('aria-pressed',val);try{localStorage.setItem(cle,val?'1':'0')}catch(e){}}
 if(al){al.setAttribute('aria-pressed',alea);majRepete();
- al.onclick=()=>{alea=!alea;bascule(al,'alea',alea);joues.clear();if(alea&&p.paused)play(hasard())};
+ al.onclick=()=>{alea=!alea;bascule(al,'alea',alea);joues.clear();hist=[];if(alea&&p.paused)play(hasard())};
  rp.onclick=()=>{repete=(repete+1)%3;majRepete()}}
-function suivant(){if(alea&&al)return play(hasard());
+function suivant(){if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
  let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)}
+// Précédent : après 3 s, revient au début du morceau ; sinon morceau d'avant (en aléatoire : celui joué juste avant).
+function precedent(){const debut=()=>{p.currentTime=0};if(cur<0||p.currentTime>3)return debut();
+ if(alea)return hist.length?play(hist.pop()):debut();
+ let n=cur-1;while(n>=0&&lis[n].hidden)n--;if(n<0&&repete)n=visibles().pop();n>=0?play(n):debut()}
 p.onended=()=>{if('{kind}'!=='films')suivant()};
 if(al){document.getElementById('sv').onclick=suivant;  // marche aussi en « Répéter 1 » : on passe quand même au suivant
- try{navigator.mediaSession.setActionHandler('nexttrack',suivant)}catch(e){}}  // touche ⏭ du clavier / casque
+ document.getElementById('pv').onclick=precedent;
+ try{navigator.mediaSession.setActionHandler('nexttrack',suivant);navigator.mediaSession.setActionHandler('previoustrack',precedent)}
+ catch(e){}}  // touches ⏮ ⏭ du clavier / casque
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
 </script></html>"""
 
@@ -659,7 +665,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             premier = {}
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
-        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
+        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="pv" class="bt" title="Morceau précédent (ou début du morceau)">⏮ Précédent</button><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
