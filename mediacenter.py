@@ -488,6 +488,13 @@ def message_erreur(texte):
     print(texte)
 
 
+class Serveur(ThreadingHTTPServer):
+    # Sous Windows, SO_REUSEADDR laisse un 2e programme s'accrocher au même port : il faut au contraire que le
+    # 2e lancement échoue, pour qu'il se contente d'ouvrir le navigateur sur le premier.
+    allow_reuse_address = os.name != "nt"
+    allow_reuse_port = False
+
+
 def titre_lib(kind, i):
     titre, dossier, _ = LIB[kind][i]
     return f"{dossier} {titre}" if kind == "series" else titre
@@ -1900,7 +1907,7 @@ def main():
     host = "0.0.0.0" if a.reseau else "127.0.0.1"
     url = f"http://localhost:{a.port}/"
     try:
-        serveur = ThreadingHTTPServer((host, a.port), Handler)
+        serveur = Serveur((host, a.port), Handler)
     except OSError:  # déjà lancé (2e double-clic) : on ouvre simplement le navigateur dessus
         print(f"Le Media Center tourne déjà : ouverture de {url}")
         if not a.sans_navigateur:

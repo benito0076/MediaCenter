@@ -301,4 +301,14 @@ if os.name == "nt":  # vraie clé de registre de l'utilisateur : posée puis ret
     assert mediacenter.demarrage_auto(True) and mediacenter.demarrage_auto()
     assert not mediacenter.demarrage_auto(False) and not mediacenter.demarrage_auto()
     mediacenter.demarrage_auto(avant)
+# Un 2e serveur sur le même port doit échouer (Windows compris), pour que le 2e lancement ouvre juste le navigateur.
+from http.server import BaseHTTPRequestHandler
+s1 = mediacenter.Serveur(("127.0.0.1", 0), BaseHTTPRequestHandler)
+try:
+    mediacenter.Serveur(("127.0.0.1", s1.server_address[1]), BaseHTTPRequestHandler)
+    raise AssertionError("deux serveurs sur le même port")
+except OSError:
+    pass
+finally:
+    s1.server_close()
 print("OK")

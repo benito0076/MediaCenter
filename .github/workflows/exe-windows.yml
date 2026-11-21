@@ -7,6 +7,7 @@ on:
 jobs:
   exe:
     runs-on: windows-latest
+    timeout-minutes: 15  # une étape bloquée ne doit pas tourner des heures
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
