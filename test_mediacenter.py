@@ -207,4 +207,18 @@ assert mediacenter.options_conversion(6) == ["-ac", "6", "-b:a", "384k"]
 assert mediacenter.options_conversion(8) == ["-ac", "6", "-b:a", "384k"]  # 7.1 -> 5.1
 assert mediacenter.options_conversion(3) == ["-ac", "3", "-b:a", "384k"]
 assert (mediacenter.nom_canaux(6), mediacenter.nom_canaux(8), mediacenter.nom_canaux(10)) == ("5.1", "7.1", "10 canaux")
+c = mediacenter.commande_externe("/usr/bin/mpv", "/films/Dune.mkv", 1234.6, 1)
+assert c == ["/usr/bin/mpv", "--fs", "--start=1235", "--aid=2", "--audio-spdif=ac3,eac3,dts,dts-hd,truehd", "--", "/films/Dune.mkv"], c
+c = mediacenter.commande_externe("C:/VLC/vlc.exe", "/films/-bizarre.mkv", 60, 0)
+assert c[:4] == ["C:/VLC/vlc.exe", "--fullscreen", "--start-time=60", "--audio-track=0"] and c[-1].endswith("-bizarre.mkv"), c
+assert mediacenter.trouver_lecteur("/chemin/qui/nexiste/pas.exe") is None
+mediacenter.LIB["films"] = [("Dune", "", "/films/Dune.mkv")]
+assert mediacenter.valider_externe({"kind": "films", "id": 0, "t": 10, "piste": 1}) == ("/films/Dune.mkv", 10.0, 1)
+for mauvais in ({"kind": "films", "id": 5}, {"kind": "musique", "id": 0}, {"kind": "films", "id": 0, "t": -1},
+                {"kind": "films", "id": 0, "piste": "1; rm -rf"}):
+    try:
+        mediacenter.valider_externe(mauvais)
+        raise AssertionError(mauvais)
+    except (ValueError, KeyError):
+        pass
 print("OK")

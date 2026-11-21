@@ -39,6 +39,7 @@ JASSUB_DIR = Path(__file__).with_name("jassub")  # rendu stylé des .ass (libass
 POLICES_DIR = Path(__file__).with_name("polices_cache")  # polices extraites des MKV
 POLICES = {}  # chemin vidéo -> [fichiers de police]
 AUDIO_DIR = Path(__file__).with_name("audio_cache")  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
+LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 CACHE_AUDIO_MAX = [5 * 1024 ** 3]  # taille max du cache audio (octets), réglable avec --cache-audio
 AUDIOS = {}  # chemin vidéo -> [{"nom", "convertir"}] (pistes audio, via ffprobe)
 EXTRACTIONS = {}  # fichier de sortie -> "en cours" | message d'erreur
@@ -272,6 +273,33 @@ def pistes_audio(chemin):
                                   + f" ({f.get('codec_name', '?')}{', ' + nom_canaux(f.get('channels', 2)) if f.get('channels', 2) > 2 else ''})",
                            "convertir": f.get("codec_name") in NON_LU, "canaux": f.get("channels", 2)} for k, f in enumerate(flux)]
     return AUDIOS[chemin]
+
+
+def trouver_lecteur(force=None):
+    """mpv (meilleure passthrough : TrueHD/DTS-HD compris) sinon VLC, dans le PATH ou aux emplacements Windows habituels."""
+    candidats = [force] if force else [shutil.which("mpv"), shutil.which("mpvnet"), shutil.which("vlc"),
+                                       r"C:\Program Files\mpv\mpv.exe", r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+                                       r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe"]
+    return next((c for c in candidats if c and Path(c).is_file()), None)
+
+
+def commande_externe(lecteur, fichier, t, piste):
+    """Ligne de commande du lecteur externe : plein écran, à la bonne position, bonne piste audio, son envoyé
+    tel quel (Dolby / DTS) à l'ampli par HDMI ou S/PDIF, qui le décode lui-même."""
+    fichier = str(Path(fichier).resolve())
+    if "mpv" in Path(lecteur).stem.lower():
+        return [lecteur, "--fs", f"--start={t:.0f}", f"--aid={piste + 1}",
+                "--audio-spdif=ac3,eac3,dts,dts-hd,truehd", "--", fichier]
+    sortie = ["--mmdevice-passthrough=2"] if os.name == "nt" else ["--spdif"]  # VLC Windows : 2 = HDMI
+    return [lecteur, "--fullscreen", f"--start-time={t:.0f}", f"--audio-track={piste}", *sortie, "--play-and-exit", fichier]
+
+
+def valider_externe(data):
+    kind, i, t, piste = data["kind"], int(data["id"]), float(data.get("t", 0)), data.get("piste", 0)
+    if not (kind in ("films", "series") and 0 <= i < len(LIB[kind]) and math.isfinite(t) and 0 <= t < 1e6
+            and piste in range(100)):
+        raise ValueError("demande invalide")
+    return LIB[kind][i][2], t, piste
 
 
 def nom_canaux(n):
@@ -666,7 +694,7 @@ ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;fon
 .qn+.qa{margin-left:0}.qn,.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qn:hover,.qa:hover,.fi button:hover{color:#fff}
 #vt{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#vt label{white-space:nowrap}
 #vtv{vertical-align:middle;width:140px;accent-color:#e50914}
-#pal{display:block;margin-top:8px;color:#aaa}#pae{color:#e50914}
+#amp{margin-top:8px}#pal{display:block;margin-top:8px;color:#aaa}#pae{color:#e50914}
 #pied{margin-top:32px;color:#777;font-size:14px}#pied .bt{margin-left:8px}
 #vts,#vta,#pas{background:#2a2a2a;color:#eee;border:0;border-radius:6px;padding:4px 6px;max-width:200px}
 #tc{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#tc .bt{font-size:18px}#tc label{white-space:nowrap}#tcv{vertical-align:middle;width:140px;accent-color:#e50914}
@@ -701,7 +729,7 @@ function play(i,auto=true){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.
  if(vid&&last>5)p.addEventListener('loadedmetadata',()=>p.currentTime=last,{once:true});  // reprise
  p.src='/media/{kind}/'+l.dataset.id;
  p.querySelectorAll('track').forEach(t=>t.remove());
- assOff();if(window.audioReset)audioReset(l);
+ assOff();if(window.audioReset)audioReset(l);{const a=document.getElementById('amp');if(a)a.hidden=!AMPLI}
  if(vid)fetch('/pistes/{kind}/'+l.dataset.id).then(r=>r.json()).then(st=>{if(lis[cur]!==l)return;  // déjà passé à une autre vidéo
   const choix=Math.max(0,st.findIndex(s=>/fr|vf/i.test(s.nom)));  // français de préférence
   st.forEach((s,n)=>{const t=document.createElement('track');
@@ -765,6 +793,12 @@ if(vid){const pa=new Audio(),pas=document.getElementById('pas'),pal=document.get
  if(!confirm('Supprimer les pistes audio converties ? Elles seront reconverties si tu les rechoisis.'))return;
  try{const r=await (await fetch('/cache-audio',{method:'POST'})).json();
   document.getElementById('ct').textContent=Math.round(r.octets/1e6)+' Mo'+(r.octets?' (piste en cours d’écoute gardée)':'');cv.disabled=true}catch(e){}}}
+// ---- Passthrough : le navigateur décode toujours le son ; mpv/VLC sur le PC l'envoie tel quel (Dolby/DTS) à l'ampli.
+const AMPLI='{ampli}';
+async function versAmpli(kind,id,t,piste,ici){const r=await fetch('/externe',{method:'POST',body:JSON.stringify({kind,id,t,piste})});
+ if(!r.ok)return alert('Impossible d’ouvrir le lecteur '+AMPLI+' sur le PC.');if(ici)p.pause();else commande('pause','','video')}
+if(vid&&AMPLI){document.getElementById('amp').title='Ouvre ce film dans '+AMPLI+' sur le PC, à la même position';
+ document.getElementById('amp').onclick=()=>versAmpli('{kind}',+lis[cur].dataset.id,p.currentTime,window.audioIdx||0,true)}
 // ---- Films / séries : l'appareil qui joue publie son état et exécute les ordres ; les autres affichent la télécommande.
 if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
  const vt=document.getElementById('vt'),vtpp=document.getElementById('vtpp'),vtv=document.getElementById('vtv'),
@@ -789,11 +823,14 @@ if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
  vts.onchange=()=>{vtsTouche=Date.now();commande('soustitres','','video',+vts.value)};
  const vta=document.getElementById('vta'),vtal=document.getElementById('vtal');let vtaListe='',vtaTouche=0;
  vta.onchange=()=>{vtaTouche=Date.now();commande('audio','','video',+vta.value)};
+ const vtamp=document.getElementById('vtamp');let dernierEtat=null;
+ vtamp.onclick=()=>{const e=dernierEtat;if(e)versAmpli(e.kind,e.id,e.t+(e.lecture&&e.age<30?e.age:0),e.aui||0,false)};
  async function suivreVideo(){try{const e=await (await fetch('/video?dev='+APPAREIL)).json();
   const visible=!!(e.titre&&!e.moi&&e.joignable&&p.paused);vt.hidden=!visible;vdistant=visible&&e.page===location.search&&e.kind==='{kind}';
   if(!visible)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);
   document.getElementById('vtt').textContent='Sur un autre appareil : '+e.titre+' — '+hms(Math.min(t,e.d||t))+(e.d?' / '+hms(e.d):'')+(e.lecture?'':' (pause)');
   vtpp.textContent=e.lecture?'⏸':'▶';vtpp.onclick=()=>commande(e.lecture?'pause':'lecture','','video');
+  dernierEtat=e;vtamp.hidden=!AMPLI;
   if(Date.now()-vtTouche>3000)vtv.value=Math.round((e.vol??1)*100);
   const st=e.st||[],cle=JSON.stringify(st);vtsl.hidden=!st.length;
   if(cle!==vtsListe){vtsListe=cle;vts.replaceChildren(...[['-1','Sans sous-titres'],...st.map((n,j)=>[String(j),n])].map(([v,n])=>{
@@ -1024,12 +1061,14 @@ class Handler(BaseHTTPRequestHandler):
                   '<div id="fa" hidden><b>À suivre</b> <button id="fv" class="bt">Vider la file</button><div id="fl"></div></div>') if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>'
             '<label id="pal" hidden>🔈 Audio <select id="pas" aria-label="Piste audio"></select> <span id="pae"></span></label>'
+            '<button id="amp" class="bt" hidden>🔊 Lire sur l’ampli (passthrough)</button>'
             '<div id="vt" hidden>🎛 <span id="vtt"></span><br><button class="bt" data-v="-10" aria-label="Reculer de 10 secondes">⏪ 10 s</button>'
             '<button class="bt" id="vtpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-v="30" aria-label="Avancer de 30 secondes">30 s ⏩</button>'
             + ('<button class="bt" id="vtsv" aria-label="Épisode suivant (à distance)">⏭ Épisode suivant</button>' if kind == "series" else "")
             + ' <label>🔊 <input id="vtv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label>'
             ' <label id="vtsl" hidden>💬 <select id="vts" aria-label="Sous-titres (à distance)"></select></label>'
-            ' <label id="vtal" hidden>🔈 <select id="vta" aria-label="Piste audio (à distance)"></select></label></div>')
+            ' <label id="vtal" hidden>🔈 <select id="vta" aria-label="Piste audio (à distance)"></select></label>'
+            ' <button class="bt" id="vtamp" hidden>🔊 Sur l’ampli</button></div>')
         taille = taille_cache_audio() if kind != "musique" else 0
         pied = (f'<p id="pied">Pistes audio converties : <span id="ct">{taille / 1e6:.0f} Mo</span> '
                 f'<button class="bt" id="cv">🗑 Vider le cache audio</button></p>' if taille else "")
@@ -1038,7 +1077,8 @@ class Handler(BaseHTTPRequestHandler):
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
         body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
-                .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)).encode()
+                .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)
+                .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "")).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1095,6 +1135,23 @@ class Handler(BaseHTTPRequestHandler):
             pass  # le navigateur a coupé (seek / pause) : normal
 
     def do_POST(self):
+        if urlparse(self.path).path == "/externe":  # ouvre le film dans mpv/VLC sur le PC (passthrough vers l'ampli)
+            n = int(self.headers.get("Content-Length") or 0)
+            if not LECTEUR[0]:
+                return self.send_error(404)
+            try:
+                if n > 2000:
+                    raise ValueError("trop gros")
+                fichier, t, piste = valider_externe(json.loads(self.rfile.read(n)))
+                subprocess.Popen(commande_externe(LECTEUR[0], fichier, t, piste),
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except (ValueError, KeyError, TypeError) as e:
+                return self.send_error(400, str(e))
+            except OSError as e:
+                print(f"⚠ Lecteur externe impossible à lancer : {e}")
+                return self.send_error(500)
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/cache-audio":
             return self.send_bytes(json.dumps({"octets": vider_cache_audio()}).encode(), "application/json")
         if urlparse(self.path).path == "/video":
@@ -1185,13 +1242,16 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--reseau", action="store_true", help="accessible depuis la TV/téléphone du réseau local")
     ap.add_argument("--tmdb", metavar="CLE", help="clé TMDB (themoviedb.org) pour de meilleures affiches ; mémorisée")
+    ap.add_argument("--lecteur-externe", metavar="CHEMIN",
+                    help="mpv.exe ou vlc.exe pour la passthrough vers l'ampli (sinon trouvé tout seul) ; mémorisé")
     ap.add_argument("--cache-audio", type=float, metavar="GO",
                     help="taille max du cache des pistes audio converties, en Go (défaut 5) ; mémorisée")
     ap.add_argument("--hors-ligne", action="store_true", help="ne pas chercher les affiches sur internet")
     a = ap.parse_args()
 
     cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
-    nouveau = {"films": a.films, "series": a.series, "musique": a.musique, "tmdb": a.tmdb, "cache_audio": a.cache_audio}
+    nouveau = {"films": a.films, "series": a.series, "musique": a.musique, "tmdb": a.tmdb, "cache_audio": a.cache_audio,
+               "lecteur_externe": a.lecteur_externe}
     if any(nouveau.values()):
         cfg.update({k: v for k, v in nouveau.items() if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
@@ -1216,6 +1276,9 @@ def main():
             FILE[:] = valider_file(json.loads(FILE_F.read_text("utf-8")))
         except ValueError:
             print("⚠ mediacenter_file.json illisible : file d'attente vide")
+    LECTEUR[0] = trouver_lecteur(cfg.get("lecteur_externe"))
+    if cfg.get("lecteur_externe") and not LECTEUR[0]:
+        print(f"⚠ Lecteur externe introuvable : {cfg['lecteur_externe']}")
     CACHE_AUDIO_MAX[0] = int(max(0.1, cfg.get("cache_audio") or 5) * 1024 ** 3)
     nettoyer_cache_audio(CACHE_AUDIO_MAX[0], demarrage=True)
     scan(dossiers)

@@ -30,6 +30,13 @@ Films et épisodes reprennent là où tu les as arrêtés (barre rouge sous le t
 ## Pistes audio (VF / VO…)
 Les navigateurs ne savent pas changer de piste audio. Avec ffmpeg installé, un menu **🔈 Audio** apparaît sous la vidéo dès qu'un film a plusieurs pistes : la piste choisie est convertie une fois par le PC (jusqu'à une minute la première fois, ensuite immédiat) puis jouée en synchronisation avec l'image. Les films dont le son est en **AC3 / DTS / TrueHD** (muets dans le navigateur) sont convertis d'office. Le **son surround est gardé** : une piste 5.1 reste en 5.1 (une 7.1 est ramenée en 5.1, les canaux arrière mélangés aux surrounds) ; si ton PC n'a que deux haut-parleurs, le navigateur la remixe lui-même en stéréo. Le menu indique le format (« Français (ac3, 5.1) »). Les pistes converties sont gardées dans `audio_cache/` (~150 Mo par piste de film en stéréo, ~300 Mo en 5.1), **5 Go au plus** : au-delà, les pistes écoutées il y a le plus longtemps sont supprimées automatiquement (elles seront reconverties si besoin). Pour changer la limite : `python mediacenter.py --cache-audio 20` (en Go, mémorisé). Pour tout libérer d'un coup : bouton **🗑 Vider le cache audio** en bas des pages Films et Séries (la piste d'un film en cours de lecture est gardée).
 
+## Passthrough vers l'ampli home cinéma
+Un navigateur décode toujours le son lui-même : impossible d'envoyer le Dolby / DTS d'origine à un ampli depuis une page web. Le Media Center tournant sur le PC branché à l'ampli, il peut en revanche ouvrir le film dans **mpv** (recommandé : AC3, E-AC3, DTS, DTS-HD MA et TrueHD) ou **VLC** sur ce PC, en plein écran, **à la même position et avec la même piste audio**, son envoyé tel quel à l'ampli par HDMI ou S/PDIF :
+- installe mpv (`winget install mpv`) ou VLC, puis relance le Media Center : il les trouve tout seul (sinon `--lecteur-externe "C:\chemin\mpv.exe"`, mémorisé) ;
+- bouton **🔊 Lire sur l'ampli (passthrough)** sous la vidéo, ou **🔊 Sur l'ampli** dans la télécommande du téléphone ; la lecture dans le navigateur se met en pause ;
+- côté Windows : régler la sortie son sur l'ampli (HDMI) ; avec VLC, activer si besoin la passthrough HDMI dans ses préférences audio.
+Ensuite, mpv/VLC se pilotent avec leur propre clavier/télécommande (la télécommande du Media Center ne les contrôle pas).
+
 ## Sous-titres
 Les fichiers `.srt` / `.vtt` / `.ass` / `.ssa` sont détectés automatiquement : même nom que la vidéo (`Film.2020.srt`, `Film.2020.fr.srt`, `Film.2020.en.srt`) ou, si la vidéo est seule dans son dossier, tout `.srt` du dossier et d'un sous-dossier `Subs/`. Le français est activé par défaut ; change de langue ou coupe-les avec le bouton du lecteur (⋮ → Sous-titres, ou CC). Les accents des vieux `.srt` (Windows-1252) sont gérés.
 
