@@ -481,8 +481,8 @@ li{position:relative}.bar{position:absolute;left:0;bottom:0;height:3px;backgroun
 ul.grid .ck{position:absolute;top:12px;right:12px;background:#000b;border-radius:50%;padding:2px 7px}
 ul:not(.grid) li{display:flex;align-items:center;gap:12px}
 ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;font-size:20px;margin:0;flex:none}
-#al{margin-top:8px;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
-#al[aria-pressed=true]{background:#e50914;color:#fff}
+#rp{margin-left:6px}#al,#rp{margin-top:8px;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
+#al[aria-pressed=true],#rp[aria-pressed=true]{background:#e50914;color:#fff}
 #pc{width:220px;height:220px;object-fit:cover;border-radius:8px;display:block;margin-bottom:12px}
 ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.show img{width:140px;border-radius:6px;flex:none}
 .ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;
@@ -514,7 +514,7 @@ function play(i){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.
   st.forEach((s,n)=>{const t=document.createElement('track');
    Object.assign(t,{kind:'subtitles',label:s.nom,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});
    if(s.ass)t.dataset.ass='/ass/{kind}/'+l.dataset.id+'/'+n;p.appendChild(t)});setTimeout(majAss,300)});
- p.play();
+ p.play().catch(()=>{});  // interrompu par un changement de morceau : normal
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
 // Sous-titres .ass : rendu stylé par JASSUB par-dessus la vidéo ; la piste WebVTT simple reste en secours.
@@ -532,15 +532,19 @@ if(vid){p.textTracks.onchange=majAss;const vw=document.getElementById('vw'),
  fs=()=>document.fullscreenElement?document.exitFullscreen():vw.requestFullscreen();  // plein écran avec les sous-titres stylés
  document.getElementById('fs').onclick=fs;p.ondblclick=fs}
 lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:play(i));
-// Lecture aléatoire (musique) : chaque morceau visible (recherche comprise) une fois, puis arrêt.
-const al=document.getElementById('al');let alea=false,joues=new Set();
-try{alea=localStorage.getItem('alea')==='1'}catch(e){}
-function hasard(){if(cur>=0)joues.add(cur);const v=lis.map((_,i)=>i).filter(i=>!lis[i].hidden&&!joues.has(i));
- if(!v.length){joues.clear();return -1}return v[Math.floor(Math.random()*v.length)]}
-if(al){al.setAttribute('aria-pressed',alea);al.onclick=()=>{alea=!alea;al.setAttribute('aria-pressed',alea);joues.clear();
- try{localStorage.setItem('alea',alea?'1':'0')}catch(e){}if(alea&&p.paused)play(hasard())}}
+// Musique : aléatoire (chaque morceau visible une fois) et « répéter tout » (on recommence au lieu de s'arrêter).
+const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=false,joues=new Set();
+try{alea=localStorage.getItem('alea')==='1';repete=localStorage.getItem('repete')==='1'}catch(e){}
+const visibles=()=>lis.map((_,i)=>i).filter(i=>!lis[i].hidden);
+function hasard(){if(cur>=0)joues.add(cur);let v=visibles().filter(i=>!joues.has(i));
+ if(!v.length){joues.clear();if(!repete)return -1;v=visibles().filter(i=>i!==cur||lis.length===1)}  // nouveau tour, sans rejouer le même
+ return v.length?v[Math.floor(Math.random()*v.length)]:-1}
+function bascule(b,cle,val){b.setAttribute('aria-pressed',val);try{localStorage.setItem(cle,val?'1':'0')}catch(e){}}
+if(al){al.setAttribute('aria-pressed',alea);rp.setAttribute('aria-pressed',repete);
+ al.onclick=()=>{alea=!alea;bascule(al,'alea',alea);joues.clear();if(alea&&p.paused)play(hasard())};
+ rp.onclick=()=>{repete=!repete;bascule(rp,'repete',repete)}}
 p.onended=()=>{if('{kind}'==='films')return;if(alea&&al)return play(hasard());
- let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;play(n)};
+ let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)};
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
 </script></html>"""
 
@@ -649,7 +653,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             premier = {}
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
-        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="al" aria-pressed="false">🔀 Aléatoire</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
+        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="al" aria-pressed="false">🔀 Aléatoire</button><button id="rp" aria-pressed="false">🔁 Répéter tout</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
