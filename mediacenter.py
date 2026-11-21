@@ -40,7 +40,7 @@ POLICES_DIR = Path(__file__).with_name("polices_cache")  # polices extraites des
 POLICES = {}  # chemin vidéo -> [fichiers de police]
 AUDIO_DIR = Path(__file__).with_name("audio_cache")  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
-MPV = {}  # mpv lancé par le Media Center : {"proc", "kind", "id", "titre"} ; piloté par la télécommande via son IPC
+PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
 MPV_IPC = r"\\.\pipe\mediacenter-mpv" if os.name == "nt" else os.path.join(tempfile.gettempdir(), "mediacenter-mpv.sock")
 CACHE_AUDIO_MAX = [5 * 1024 ** 3]  # taille max du cache audio (octets), réglable avec --cache-audio
 AUDIOS = {}  # chemin vidéo -> [{"nom", "convertir"}] (pistes audio, via ffprobe)
@@ -285,7 +285,7 @@ def trouver_lecteur(force=None):
     return next((c for c in candidats if c and Path(c).is_file()), None)
 
 
-def commande_externe(lecteur, fichier, t, piste, ipc=None):
+def commande_externe(lecteur, fichier, t, piste, ipc=None, http=None):
     """Ligne de commande du lecteur externe : plein écran, à la bonne position, bonne piste audio, son envoyé
     tel quel (Dolby / DTS) à l'ampli par HDMI ou S/PDIF, qui le décode lui-même."""
     fichier = str(Path(fichier).resolve())
@@ -293,7 +293,10 @@ def commande_externe(lecteur, fichier, t, piste, ipc=None):
         return [lecteur, "--fs", f"--start={t:.0f}", f"--aid={piste + 1}", "--audio-spdif=ac3,eac3,dts,dts-hd,truehd",
                 *([f"--input-ipc-server={ipc}"] if ipc else []), "--", fichier]
     sortie = ["--mmdevice-passthrough=2"] if os.name == "nt" else ["--spdif"]  # VLC Windows : 2 = HDMI
-    return [lecteur, "--fullscreen", f"--start-time={t:.0f}", f"--audio-track={piste}", *sortie, "--play-and-exit", fichier]
+    pilotage = ["--extraintf=http", "--http-host=127.0.0.1", f"--http-port={http[0]}", f"--http-password={http[1]}"] if http else []
+    langue = ["--language=en"] if os.name == "nt" and http else []  # noms des pistes en anglais (lus par etat_vlc)
+    return [lecteur, "--fullscreen", f"--start-time={t:.0f}", f"--audio-track={piste}", *sortie, *pilotage, *langue,
+            "--play-and-exit", fichier]
 
 
 def valider_externe(data):
@@ -309,8 +312,20 @@ def titre_lib(kind, i):
     return f"{dossier} {titre}" if kind == "series" else titre
 
 
-def mpv_actif():
-    return bool(MPV.get("proc")) and MPV["proc"].poll() is None
+def fermer_pilote():
+    proc = PILOTE["proc"]
+    try:
+        if os.name == "nt":
+            proc.terminate()
+        else:
+            os.killpg(proc.pid, __import__("signal").SIGTERM)
+        proc.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def pilote_actif():
+    return bool(PILOTE.get("proc")) and PILOTE["proc"].poll() is None
 
 
 def mpv_ipc(commandes):
@@ -341,9 +356,78 @@ def nom_piste_mpv(p):
     return " – ".join(x for x in (LANGUES.get(p.get("lang", ""), p.get("lang", "")), p.get("title", "")) if x) or f"Piste {p.get('id')}"
 
 
+def vlc_http(**params):
+    """Interface web de VLC (--extraintf=http, locale au PC, mot de passe tiré au hasard) : envoie un ordre, renvoie l'état."""
+    req = Request(f"http://127.0.0.1:{PILOTE['port']}/requests/status.json?" + urlencode(params),
+                  headers={"Authorization": "Basic " + __import__("base64").b64encode(f":{PILOTE['mdp']}".encode()).decode()})
+    with urlopen(req, timeout=2) as r:
+        return json.load(r)
+
+
+def pistes_vlc(d):
+    """Flux audio / sous-titres listés par VLC 3 (« Stream N ») -> ([(id, nom)], [(id, nom)])."""
+    flux = sorted(((int(k.split()[-1]), v) for k, v in d.get("information", {}).get("category", {}).items()
+                   if k.startswith("Stream ") and k.split()[-1].isdigit()), key=lambda x: x[0])
+    nom = lambda v: " – ".join(x for x in (LANGUES.get(v.get("Language", "").lower()[:3], v.get("Language", "")),
+                                            v.get("Description", "")) if x) or "Piste"
+    return ([(i, nom(v) + f" ({v.get('Codec', '?').split(' (')[0]})") for i, v in flux if v.get("Type") == "Audio"],
+            [(i, nom(v)) for i, v in flux if v.get("Type") == "Subtitle"])
+
+
+def etat_vlc():
+    e = {"kind": PILOTE["kind"], "id": PILOTE["id"], "titre": PILOTE["titre"] + " (VLC)", "t": 0, "d": 0, "lecture": True,
+         "vol": PILOTE.get("vol", 1), "page": "*", "st": [], "sti": -1, "au": [], "aui": 0, "age": 0, "moi": False,
+         "joignable": True, "mpv": True}  # « mpv » : lecteur externe (pas de bouton « Sur l'ampli »)
+    try:
+        d = vlc_http()
+    except (OSError, ValueError):
+        return e  # VLC démarre encore
+    auds, subs = pistes_vlc(d)
+    # VLC 3 ne dit pas quelle piste est active : on retient le dernier choix fait depuis la télécommande.
+    e.update(t=d.get("time") or 0, d=d.get("length") or 0, lecture=d.get("state") != "paused",
+             au=[f"{k + 1}. {n}" for k, (_, n) in enumerate(auds)], aui=min(PILOTE.get("aui", 0), max(0, len(auds) - 1)),
+             st=[n for _, n in subs], sti=PILOTE.get("sti", -1) if PILOTE.get("sti", -1) < len(subs) else -1)
+    if d.get("volume"):
+        e["vol"] = min(1, d["volume"] / 256)  # 256 = 100 %
+    return e
+
+
+def commande_vlc(c):
+    cmd, v = c["cmd"], c["v"]
+    if cmd in ("lecture", "pause"):
+        vlc_http(command="pl_forceresume" if cmd == "lecture" else "pl_forcepause")
+    elif cmd == "deplacer":
+        vlc_http(command="seek", val=f"{v:+.0f}")
+    elif cmd == "volume":
+        vlc_http(command="volume", val=round(v * 256))
+        PILOTE["vol"] = v
+    elif cmd in ("soustitres", "audio"):
+        auds, subs = pistes_vlc(vlc_http())
+        pistes = subs if cmd == "soustitres" else auds
+        if v == -1 or int(v) < len(pistes):
+            vlc_http(command="subtitle_track" if cmd == "soustitres" else "audio_track", val=-1 if v == -1 else pistes[int(v)][0])
+            PILOTE["sti" if cmd == "soustitres" else "aui"] = int(v)
+    elif cmd in ("jouer", "suivant"):
+        lib, actuel = LIB[PILOTE["kind"]], PILOTE["id"]
+        i = int(c["k"]) if cmd == "jouer" else actuel + 1
+        if not 0 <= i < len(lib) or (cmd == "suivant" and lib[i][1] != lib[actuel][1]):
+            return
+        # start-time=0 : sinon la position de départ du lancement s'appliquerait aussi au nouveau fichier
+        vlc_http(command="in_play", input=Path(lib[i][2]).resolve().as_uri(), option="start-time=0")
+        PILOTE.update(id=i, titre=titre_lib(PILOTE["kind"], i), aui=0, sti=-1)
+
+
+def etat_pilote():
+    return etat_mpv() if PILOTE["type"] == "mpv" else etat_vlc()
+
+
+def commande_pilote(c):
+    return commande_mpv(c) if PILOTE["type"] == "mpv" else commande_vlc(c)
+
+
 def etat_mpv():
     """État de mpv au format de la télécommande vidéo (même bandeau sur le téléphone)."""
-    e = {"kind": MPV["kind"], "id": MPV["id"], "titre": MPV["titre"] + " (mpv)", "t": 0, "d": 0, "lecture": True, "vol": 1,
+    e = {"kind": PILOTE["kind"], "id": PILOTE["id"], "titre": PILOTE["titre"] + " (mpv)", "t": 0, "d": 0, "lecture": True, "vol": 1,
          "page": "*", "st": [], "sti": -1, "au": [], "aui": 0, "age": 0, "moi": False, "joignable": True, "mpv": True}
     try:
         t, d, pause, vol, pistes = mpv_ipc([["get_property", x] for x in ("time-pos", "duration", "pause", "volume", "track-list")])
@@ -373,14 +457,14 @@ def commande_mpv(c):
         if v == -1 or int(v) < len(pistes):
             mpv_ipc([["set_property", "sid" if typ == "sub" else "aid", "no" if v == -1 else pistes[int(v)]["id"]]])
     elif cmd in ("jouer", "suivant"):
-        lib, actuel = LIB[MPV["kind"]], MPV["id"]
+        lib, actuel = LIB[PILOTE["kind"]], PILOTE["id"]
         i = int(c["k"]) if cmd == "jouer" else actuel + 1
         if not 0 <= i < len(lib) or (cmd == "suivant" and lib[i][1] != lib[actuel][1]):  # fin de la série / du film
             return
         # Les options du lancement (position de départ, piste audio) s'appliqueraient aussi au nouveau fichier.
         mpv_ipc([["set_property", "options/start", "none"], ["set_property", "options/aid", "auto"],
                  ["loadfile", str(Path(lib[i][2]).resolve())]])
-        MPV.update(id=i, titre=titre_lib(MPV["kind"], i))
+        PILOTE.update(id=i, titre=titre_lib(PILOTE["kind"], i))
 
 
 def nom_canaux(n):
@@ -1115,8 +1199,8 @@ class Handler(BaseHTTPRequestHandler):
                 RELEVE[dev] = time.time()
                 liste = COMMANDES.pop(dev, [])
             return self.send_bytes(json.dumps(liste, ensure_ascii=False).encode(), "application/json")
-        if url.path == "/video" and mpv_actif():  # mpv joue sur le PC : la télécommande le pilote
-            return self.send_bytes(json.dumps(etat_mpv(), ensure_ascii=False).encode(), "application/json")
+        if url.path == "/video" and pilote_actif():  # mpv / VLC joue sur le PC : la télécommande le pilote
+            return self.send_bytes(json.dumps(etat_pilote(), ensure_ascii=False).encode(), "application/json")
         if url.path in ("/encours", "/video"):
             e = etat_public(ENCOURS if url.path == "/encours" else VIDEO, parse_qs(url.query).get("dev", [""])[0])
             return self.send_bytes(json.dumps(e, ensure_ascii=False).encode(), "application/json")
@@ -1228,12 +1312,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("trop gros")
                 kind, i, fichier, t, piste = valider_externe(json.loads(self.rfile.read(n)))
                 est_mpv = "mpv" in Path(LECTEUR[0]).stem.lower()
-                if est_mpv and mpv_actif():
-                    MPV["proc"].terminate()  # un seul mpv à la fois
-                proc = subprocess.Popen(commande_externe(LECTEUR[0], fichier, t, piste, MPV_IPC if est_mpv else None),
-                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if est_mpv:
-                    MPV.update(proc=proc, kind=kind, id=i, titre=titre_lib(kind, i))
+                if pilote_actif():
+                    fermer_pilote()  # un seul lecteur à la fois
+                http = None
+                if not est_mpv:  # VLC : interface web locale, port libre et mot de passe au hasard
+                    with socket.socket() as so:
+                        so.bind(("127.0.0.1", 0))
+                        http = (so.getsockname()[1], __import__("secrets").token_urlsafe(16))
+                proc = subprocess.Popen(commande_externe(LECTEUR[0], fichier, t, piste, MPV_IPC if est_mpv else None, http),
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                        env={**os.environ, "LANGUAGE": "en", "LC_ALL": "C"} if http and os.name != "nt" else None,
+                                        start_new_session=os.name != "nt")  # groupe à part : fermé en entier (lanceurs snap/flatpak)
+                PILOTE.clear()
+                PILOTE.update(type="mpv" if est_mpv else "vlc", proc=proc, kind=kind, id=i, titre=titre_lib(kind, i), aui=piste)
+                if http:
+                    PILOTE.update(port=http[0], mdp=http[1])
             except (ValueError, KeyError, TypeError) as e:
                 return self.send_error(400, str(e))
             except OSError as e:
@@ -1266,11 +1359,11 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, KeyError, TypeError, AttributeError):
                 return self.send_error(400)
             pour_video = parse_qs(urlparse(self.path).query).get("pour", [""])[0] == "video"
-            if pour_video and mpv_actif():
+            if pour_video and pilote_actif():
                 try:
-                    commande_mpv(c)
+                    commande_pilote(c)
                 except (OSError, ValueError, KeyError, IndexError) as e:
-                    print(f"⚠ Commande mpv refusée : {e}")
+                    print(f"⚠ Commande refusée par le lecteur : {e}")
                     return self.send_error(409)
                 self.send_response(204)
                 return self.end_headers()

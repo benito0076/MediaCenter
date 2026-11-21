@@ -222,4 +222,12 @@ for mauvais in ({"kind": "films", "id": 5}, {"kind": "musique", "id": 0}, {"kind
         raise AssertionError(mauvais)
     except (ValueError, KeyError):
         pass
+c = mediacenter.commande_externe("/usr/bin/vlc", "/f.mkv", 5, 1, http=(8800, "mdp"))
+assert "--http-port=8800" in c and "--http-password=mdp" in c and "--http-host=127.0.0.1" in c and c[-1].endswith("f.mkv"), c
+etat = {"information": {"category": {"meta": {}, "Stream 0": {"Type": "Video"},
+        "Stream 2": {"Type": "Audio", "Language": "English", "Codec": "Vorbis Audio (vorb)"},
+        "Stream 1": {"Type": "Audio", "Language": "French", "Codec": "A52 Audio (aka AC3) (a52 )"},
+        "Stream 3": {"Type": "Subtitle", "Language": "French", "Codec": "Text subtitles (subt)"}}}}
+assert mediacenter.pistes_vlc(etat) == ([(1, "Français (A52 Audio)"), (2, "Anglais (Vorbis Audio)")], [(3, "Français")])
+assert mediacenter.pistes_vlc({}) == ([], [])
 print("OK")
