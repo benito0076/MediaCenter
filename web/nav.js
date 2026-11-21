@@ -28,3 +28,10 @@ document.addEventListener('keydown',e=>{const a=document.activeElement,d=DIR[e.k
 {const pf=document.getElementById('pf');if(pf){const avant=pf.value;pf.onchange=async()=>{let v=pf.value;
  if(v==='__nouveau'){v=(prompt(pf.dataset.question)||'').trim();if(!v||!(await fetch('/profils',{method:'POST',body:v})).ok){pf.value=avant;return}}
  document.cookie='profil='+encodeURIComponent(v)+'; path=/; max-age=31536000; samesite=strict';location.reload()}}}
+// Bandeau « outils manquants » (sur le PC) : installation par winget, puis rechargement quand c'est fini.
+document.querySelectorAll('[data-installer]').forEach(b=>b.onclick=async()=>{const o=b.dataset.installer,etat=document.getElementById('outils_etat');
+ document.querySelectorAll('[data-installer]').forEach(x=>x.disabled=true);etat.textContent='Installation en cours… (quelques minutes)';
+ await fetch('/installer/'+o,{method:'POST'});
+ const t=setInterval(async()=>{const e=(await (await fetch('/installer-etat')).json())[o];
+  if(e==='ok'){clearInterval(t);etat.textContent='Installation terminée.';setTimeout(()=>location.reload(),800)}
+  else if(e&&e!=='en cours'){clearInterval(t);etat.textContent=e;document.querySelectorAll('[data-installer]').forEach(x=>x.disabled=false)}},3000)});

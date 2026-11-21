@@ -357,4 +357,7 @@ for mauvais in ("", "Principal", "a/b", "x" * 31, "<script>"):
     except ValueError:
         pass
 m.PROFILS[:] = []
+c = mediacenter.commande_winget("ffmpeg")
+assert c[1:5] == ["install", "-e", "--id", "Gyan.FFmpeg"] and "--accept-package-agreements" in c
+assert mediacenter.commande_winget("vlc")[4] == "VideoLAN.VLC"
 print("OK")

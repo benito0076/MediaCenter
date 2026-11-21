@@ -108,7 +108,11 @@ ES = {
         "Primer inicio: elige tus carpetas de películas, series y música.\n(Cancelar para omitir una carpeta.)",
     "Dossier de films": "Carpeta de películas", "Dossier de séries TV": "Carpeta de series", "Dossier de musique": "Carpeta de música",
     "Langue : Español": "Idioma: Français", "Nouveau profil…": "Nuevo perfil…", "Profil": "Perfil",
-    "Nom du nouveau profil :": "Nombre del nuevo perfil:", "Trier ": "Ordenar ", ">Titre<": ">Título<",
+    "Nom du nouveau profil :": "Nombre del nuevo perfil:", "Manque :": "Falta:", "Installer": "Instalar",
+    "Télécharger": "Descargar", "ffmpeg (vidéos AVI/HEVC, sous-titres et pistes audio des MKV, son AC3/DTS)":
+        "ffmpeg (vídeos AVI/HEVC, subtítulos y pistas de audio de los MKV, sonido AC3/DTS)",
+    "un lecteur pour l'ampli (passthrough Dolby/DTS)": "un reproductor para el amplificador (passthrough Dolby/DTS)",
+    "Installation en cours… (quelques minutes)": "Instalando… (unos minutos)", "Installation terminée.": "Instalación terminada.", "Trier ": "Ordenar ", ">Titre<": ">Título<",
     ">Ajoutés récemment<": ">Añadidas recientemente<", "Année (récents)": "Año (recientes)", "Année (anciens)": "Año (antiguas)",
     "Genre <": "Género <", ">Tous<": ">Todos<", " Non vus": " No vistas", "🌐 Español": "🌐 Français",
 }
@@ -824,6 +828,61 @@ def commande_segment(chemin, k):
             "-output_ts_offset", str(debut), "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", "pipe:1"]
 
 
+# --- Installation des outils (ffmpeg, VLC) par winget, depuis la page, sur le PC seulement ---
+OUTILS_WINGET = {"ffmpeg": "Gyan.FFmpeg", "vlc": "VideoLAN.VLC"}
+INSTALLS = {}  # outil -> "en cours" | "ok" | "erreur : …"
+
+
+def commande_winget(outil):
+    return [shutil.which("winget") or "winget", "install", "-e", "--id", OUTILS_WINGET[outil], "--silent",
+            "--accept-package-agreements", "--accept-source-agreements"]
+
+
+def rafraichir_outils():
+    """Après une installation : relit le PATH de Windows (mis à jour par winget) et retrouve ffmpeg / VLC."""
+    global FFMPEG, FFPROBE
+    if os.name == "nt":
+        import winreg
+        chemins = []
+        for racine, cle in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                            (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+            try:
+                with winreg.OpenKey(racine, cle) as k:
+                    chemins.append(os.path.expandvars(winreg.QueryValueEx(k, "Path")[0]))
+            except OSError:
+                pass
+        chemins.append(os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links"))  # outils « portables » de winget
+        os.environ["PATH"] = os.pathsep.join(chemins + [os.environ.get("PATH", "")])
+    FFMPEG, FFPROBE = shutil.which("ffmpeg"), shutil.which("ffprobe")
+    if not LECTEUR[0]:
+        LECTEUR[0] = trouver_lecteur()
+
+
+def installer(outil):
+    try:
+        r = subprocess.run(commande_winget(outil), capture_output=True, timeout=1800)
+        rafraichir_outils()
+        ok = FFMPEG and FFPROBE if outil == "ffmpeg" else LECTEUR[0]
+        INSTALLS[outil] = "ok" if ok else f"erreur : {r.stdout.decode(errors='replace')[-200:] or 'outil introuvable après installation'}"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        INSTALLS[outil] = f"erreur : {e}"
+
+
+def bandeau_outils():
+    """Sur le PC seulement : ce qui manque, avec un bouton « Installer » si winget est là."""
+    manque = [(o, t) for o, t, ok in (("ffmpeg", "ffmpeg (vidéos AVI/HEVC, sous-titres et pistes audio des MKV, son AC3/DTS)",
+                                       FFMPEG and FFPROBE),
+                                      ("vlc", "un lecteur pour l'ampli (passthrough Dolby/DTS)", LECTEUR[0])) if not ok]
+    if not manque:
+        return ""
+    winget = bool(shutil.which("winget"))
+    lignes = "".join(f'<div>⚙ {tr("Manque :")} {tr(t)} '
+                     + (f'<button class="bt" data-installer="{o}">{tr("Installer")}</button>' if winget else
+                        f'<a href="{"https://ffmpeg.org/download.html" if o == "ffmpeg" else "https://www.videolan.org"}" target="_blank">'
+                        f'{tr("Télécharger")}</a>') + "</div>" for o, t in manque)
+    return f'<div id="outils">{lignes}<small id="outils_etat"></small></div>'
+
+
 def nom_canaux(n):
     return {3: "2.1", 4: "4.0", 5: "5.0", 6: "5.1", 7: "6.1", 8: "7.1"}.get(n, f"{n} canaux")
 
@@ -1418,6 +1477,8 @@ class Handler(BaseHTTPRequestHandler):
             if fmt == "ass":
                 return self.send_bytes(texte.encode(), "text/plain; charset=utf-8")
             return self.send_bytes(vers_vtt(texte).encode(), "text/vtt; charset=utf-8")
+        if url.path == "/installer-etat":
+            return self.send_bytes(json.dumps(INSTALLS).encode(), "application/json")
         if url.path == "/file":
             return self.send_bytes(json.dumps(FILE, ensure_ascii=False).encode(), "application/json")
         if url.path == "/commande":  # relevé par l'appareil qui joue, chaque seconde
@@ -1473,7 +1534,8 @@ class Handler(BaseHTTPRequestHandler):
                         f'<button class="bt" id="cv">🗑 Vider le cache audio</button></p>' if taille else "")
         player = traduire(player)
         body = gabarit()
-        body = body.replace("{accueil}", "").replace("{profils}", html_profils())
+        body = body.replace("{accueil}", "").replace("{profils}", html_profils()).replace(
+            "{outils}", bandeau_outils() if self.client_address[0] in ("127.0.0.1", "::1") else "")
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
@@ -1491,12 +1553,13 @@ class Handler(BaseHTTPRequestHandler):
         for k in LIB:
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "").replace("{n" + k + "}", str(n))
-        body = (body + "<main>" + html_accueil() + """</main><script>
+        outils = bandeau_outils() if self.client_address[0] in ("127.0.0.1", "::1") else ""
+        body = (body + "<main>" + outils + html_accueil() + """</main><script>
 const cartes=[...document.querySelectorAll('.carte')];
 q.oninput=()=>{const s=q.value.toLowerCase();cartes.forEach(c=>c.hidden=!c.textContent.toLowerCase().includes(s))};
 document.getElementById('rs').onclick=async()=>{await fetch('/rescan',{method:'POST'});location.reload()};
 document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'POST'});location.reload()};
-""" + NAV_JS + """</script></html>""").encode()
+""" + traduire(NAV_JS) + """</script></html>""").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1619,6 +1682,16 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
                 print(f"⚠ Lecteur externe impossible à lancer : {e}")
                 return self.send_error(500)
             self.send_response(204)
+            return self.end_headers()
+        m = re.fullmatch(r"/installer/(ffmpeg|vlc)", urlparse(self.path).path)
+        if m:  # seulement depuis le PC lui-même : un autre appareil ne peut pas lancer d'installation
+            if self.client_address[0] not in ("127.0.0.1", "::1") or not shutil.which("winget"):
+                return self.send_error(403)
+            with VERROU:
+                if INSTALLS.get(m[1]) != "en cours":
+                    INSTALLS[m[1]] = "en cours"
+                    threading.Thread(target=installer, args=(m[1],), daemon=True).start()
+            self.send_response(202)
             return self.end_headers()
         if urlparse(self.path).path == "/profils":  # « ➕ Nouveau profil »
             n = int(self.headers.get("Content-Length") or 0)
