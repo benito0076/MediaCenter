@@ -7,9 +7,9 @@ Un seul fichier Python, aucune dépendance. Liste tes films et ta musique, reche
 2. Télécharger ce dossier.
 3. Première fois, dans un terminal ouvert dans ce dossier :
    ```
-   python mediacenter.py --films "D:\Films" --musique "D:\Musique"
+   python mediacenter.py --films "D:\Films" --series "D:\Series" --musique "D:\Musique"
    ```
-   (`--films` / `--musique` répétables pour plusieurs dossiers.)
+   (`--films` / `--series` / `--musique` répétables pour plusieurs dossiers ; on peut en ajouter un plus tard, les autres sont gardés.)
 4. Ensuite : double-clic sur `MediaCenter.bat`. Le navigateur s'ouvre sur http://localhost:8765.
 
 ## Affiches et résumés
@@ -20,6 +20,9 @@ python mediacenter.py --tmdb TA_CLE
 La clé est mémorisée dans `mediacenter.json`. TMDB est rapide (pas d'attente de 3 s) et repasse automatiquement sur les films déjà traités par iTunes.
 
 Le titre est deviné à partir du nom du fichier (`Inception.2010.1080p.mkv` → *Inception*, 2010). Film mal reconnu : renomme le fichier `Titre (Année).mkv`, retire sa ligne de `mediacenter_cache.json` et relance.
+
+## Séries TV
+Les épisodes sont regroupés par série grâce au nom du fichier (`Breaking.Bad.S01E02…`, `Kaamelott 1x02…`) ou, à défaut, au nom du dossier de la série (`Series/Breaking Bad/Saison 1/…`). Clic sur une série → liste des épisodes dans l'ordre ; l'épisode suivant démarre automatiquement. Affiche et résumé de la série : TMDB si une clé est donnée, sinon iTunes.
 
 ## Pochettes d'albums
 Pour chaque dossier d'album, le Media Center utilise l'image présente dans le dossier (`cover.jpg`, `folder.jpg`, `front.png`… sinon la première image trouvée). À défaut, il prend la pochette intégrée aux fichiers (MP3, FLAC, M4A). S'il n'y en a toujours pas, il cherche la pochette sur iTunes d'après le nom du dossier (`Artiste - Album` ou `Artiste/Album`), en arrière-plan, et la mémorise dans `mediacenter_cache.json`.

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Media Center minimaliste : films + musique dans le navigateur. Python 3.8+, zéro dépendance.
+"""Media Center minimaliste : films, séries + musique dans le navigateur. Python 3.8+, zéro dépendance.
 
-Usage :  python mediacenter.py --films "D:\\Films" --musique "D:\\Musique"
+Usage :  python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musique "D:\\Musique"
 Les dossiers sont mémorisés dans mediacenter.json ; ensuite `python mediacenter.py` suffit.
 Affiches et résumés : TMDB si une clé est donnée (--tmdb CLE), sinon iTunes ; gardés dans mediacenter_cache.json.
 """
 import argparse, html, json, mimetypes, os, re, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, urlencode, quote
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -16,10 +16,11 @@ CONFIG = Path(__file__).with_name("mediacenter.json")
 CACHE = Path(__file__).with_name("mediacenter_cache.json")
 EXT = {
     "films": {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v"},
+    "series": {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v"},
     "musique": {".mp3", ".flac", ".ogg", ".m4a", ".wav", ".opus", ".aac"},
 }
-LIB = {"films": [], "musique": []}  # chaque entrée : (titre, sous-dossier, chemin absolu)
-META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "album:<dossier>" -> {"affiche"} ; {} = introuvable
+LIB = {"films": [], "series": [], "musique": []}  # (titre, sous-dossier ou nom de série, chemin absolu)
+META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "serie:<nom>" -> idem ; "album:<dossier>" -> {"affiche"} ; {} = introuvable
 COVERS = {}  # dossier de musique -> image locale (cover.jpg…), ou morceau avec pochette intégrée, ou None
 IMG = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -130,6 +131,21 @@ def pochette_integree(chemin):
     return (img, "image/png" if img[:4] == b"\x89PNG" else "image/jpeg") if img else None
 
 
+EP = re.compile(r"\b[Ss](\d{1,2}) ?[Ee](\d{1,3})|\b(\d{1,2})x(\d{2,3})\b")
+
+
+def episode(stem, dossiers):
+    """'The.Office.S02E05.Le.Bal.720p' -> ('The Office', 'S02E05 – Le Bal') ; dossiers = sous-dossiers depuis la racine."""
+    s = re.sub(r"[._]+", " ", stem)
+    m = EP.search(s)
+    dossier = nettoyer(dossiers[0])[0] if dossiers else ""
+    if not m:  # pas de SxxEyy : rangé dans la série de son dossier
+        return dossier or "Divers", nettoyer(stem)[0] or stem
+    reste = nettoyer(s[m.end():])[0]
+    ep = f"S{int(m[1] or m[3]):02}E{int(m[2] or m[4]):02}" + (f" – {reste}" if reste else "")
+    return nettoyer(s[:m.start()])[0] or dossier or "Divers", ep
+
+
 def scan(dossiers):
     for kind, roots in dossiers.items():
         items = []
@@ -137,9 +153,13 @@ def scan(dossiers):
             root = Path(root)
             for p in root.rglob("*"):
                 if p.suffix.lower() in EXT[kind] and p.is_file():
-                    titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
                     dossier = str(p.parent.relative_to(root))
-                    items.append((titre or p.stem, "" if dossier == "." else dossier, str(p)))
+                    dossier = "" if dossier == "." else dossier
+                    if kind == "series":
+                        dossier, titre = episode(p.stem, p.parent.relative_to(root).parts)
+                    else:
+                        titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
+                    items.append((titre or p.stem, dossier, str(p)))
                     if kind == "musique":
                         if str(p.parent) not in COVERS:
                             COVERS[str(p.parent)] = pochette_locale(p.parent)
@@ -156,34 +176,36 @@ def choisir(resultats, annee):  # format iTunes
     if not resultats:
         return {}
     r = meilleur(resultats, annee, "releaseDate")
-    return {"titre": r.get("trackName", ""), "annee": r.get("releaseDate", "")[:4],
+    return {"titre": r.get("trackName") or r.get("collectionName", ""), "annee": r.get("releaseDate", "")[:4],
             "resume": r.get("longDescription") or r.get("shortDescription", ""),
             "affiche": r.get("artworkUrl100", "").replace("100x100", "600x600")}
 
 
-def choisir_tmdb(resultats, annee):
+def choisir_tmdb(resultats, annee, champ="release_date"):  # séries : champ="first_air_date"
     if not resultats:
         return {}
-    r = meilleur(resultats, annee, "release_date")
-    return {"titre": r.get("title", ""), "annee": (r.get("release_date") or "")[:4], "resume": r.get("overview", ""),
+    r = meilleur(resultats, annee, champ)
+    return {"titre": r.get("title") or r.get("name", ""), "annee": (r.get(champ) or "")[:4], "resume": r.get("overview", ""),
             "affiche": "https://image.tmdb.org/t/p/w500" + r["poster_path"] if r.get("poster_path") else "",
             "source": "tmdb"}
 
 
-def chercher_itunes(titre, annee):
-    q = urlencode({"term": titre, "media": "movie", "entity": "movie", "country": "fr", "lang": "fr_fr", "limit": 10})
+def chercher_itunes(titre, annee, quoi="movie"):
+    media, entity = ("movie", "movie") if quoi == "movie" else ("tvShow", "tvSeason")
+    q = urlencode({"term": titre, "media": media, "entity": entity, "country": "fr", "lang": "fr_fr", "limit": 10})
     with urlopen("https://itunes.apple.com/search?" + q, timeout=10) as r:
         return choisir(json.load(r).get("results", []), annee)
 
 
-def chercher_tmdb(titre, annee, cle):
+def chercher_tmdb(titre, annee, cle, quoi="movie"):
     q, h = {"query": titre, "language": "fr-FR"}, {"Accept": "application/json"}
     if cle.startswith("eyJ"):  # « jeton d'accès en lecture » (long) plutôt que « clé d'API » (courte)
         h["Authorization"] = "Bearer " + cle
     else:
         q["api_key"] = cle
-    with urlopen(Request("https://api.themoviedb.org/3/search/movie?" + urlencode(q), headers=h), timeout=10) as r:
-        return choisir_tmdb(json.load(r).get("results", []), annee)
+    url = f"https://api.themoviedb.org/3/search/{quoi}?" + urlencode(q)
+    with urlopen(Request(url, headers=h), timeout=10) as r:
+        return choisir_tmdb(json.load(r).get("results", []), annee, "release_date" if quoi == "movie" else "first_air_date")
 
 
 def chercher_album(terme):
@@ -198,25 +220,26 @@ def sauver():
 
 
 def enrichir(cle=None):
-    films = [Path(p) for _, _, p in LIB["films"]]
-    # Avec TMDB, on repasse aussi sur les films trouvés (ou pas) par iTunes.
-    manquants = [p for p in films if p.name not in META or (cle and META[p.name].get("source") != "tmdb")]
+    a_faire = [(Path(c).name, *nettoyer(Path(c).stem), "movie") for _, _, c in LIB["films"]]
+    a_faire += [("serie:" + n, n, "", "tv") for n in dict.fromkeys(d for _, d, _ in LIB["series"])]
+    # Avec TMDB, on repasse aussi sur ce qu'iTunes a trouvé (ou pas).
+    manquants = [x for x in a_faire if x[0] not in META or (cle and META[x[0]].get("source") != "tmdb")]
     if manquants:
-        print(f"Recherche des affiches ({'TMDB' if cle else 'iTunes'}) pour {len(manquants)} films (en arrière-plan)…")
-    for p in manquants:
+        print(f"Recherche des affiches ({'TMDB' if cle else 'iTunes'}) pour {len(manquants)} films/séries (en arrière-plan)…")
+    for cle_meta, titre, annee, quoi in manquants:
         try:
-            info = chercher_tmdb(*nettoyer(p.stem), cle) if cle else chercher_itunes(*nettoyer(p.stem))
+            info = chercher_tmdb(titre, annee, cle, quoi) if cle else chercher_itunes(titre, annee, quoi)
         except HTTPError as e:
             if e.code == 401:
                 print("⚠ Clé TMDB refusée : vérifie-la (python mediacenter.py --tmdb CLE)")
                 break
-            print(f"⚠ Affiche non récupérée pour {p.name} : {e}")
+            print(f"⚠ Affiche non récupérée pour {cle_meta} : {e}")
             continue
         except (OSError, ValueError) as e:  # pas d'internet : on réessaiera au prochain lancement
-            print(f"⚠ Affiche non récupérée pour {p.name} : {e}")
+            print(f"⚠ Affiche non récupérée pour {cle_meta} : {e}")
             continue
         # TMDB n'a rien trouvé : on garde ce qu'iTunes avait, marqué comme déjà tenté.
-        META[p.name] = info or ({**META.get(p.name, {}), "source": "tmdb"} if cle else {})
+        META[cle_meta] = info or ({**META.get(cle_meta, {}), "source": "tmdb"} if cle else {})
         sauver()
         time.sleep(0.1 if cle else 3)  # ponytail: iTunes limite à ~20 requêtes/min ; 1re fois lente si grosse collection
 
@@ -252,21 +275,23 @@ ul.grid li{border:0;padding:6px;border-radius:8px}ul.grid small{display:block;ma
 ul:not(.grid) li{display:flex;align-items:center;gap:12px}
 ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;font-size:20px;margin:0;flex:none}
 #pc{width:220px;height:220px;object-fit:cover;border-radius:8px;display:block;margin-bottom:12px}
-ul.grid img,.ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;
+ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.show img{width:140px;border-radius:6px;flex:none}
+.ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;
  display:flex;align-items:center;justify-content:center;font-size:40px;margin-bottom:6px}
 </style>
 <header><b>🎬 Media Center</b>
-<a class="tab {f}" href="/?k=films">Films ({nf})</a><a class="tab {m}" href="/?k=musique">Musique ({nm})</a>
+<a class="tab {films}" href="/?k=films">Films ({nfilms})</a><a class="tab {series}" href="/?k=series">Séries ({nseries})</a>
+<a class="tab {musique}" href="/?k=musique">Musique ({nmusique})</a>
 <input id="q" placeholder="Rechercher…" autofocus></header>
-<main>{player}<h2 id="dt"></h2><p id="dr"></p><ul id="l" class="{grid}">{items}</ul></main>
+<main>{player}{intro}<ul id="l" class="{grid}">{items}</ul></main>
 <script>
 const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];let cur=-1;
 function play(i){if(i<0||i>=lis.length)return;lis.forEach(l=>l.classList.remove('on'));
  cur=i;const l=lis[i];l.classList.add('on');p.src='/media/{kind}/'+l.dataset.id;p.play();
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
-lis.forEach((l,i)=>l.onclick=()=>play(i));
-p.onended=()=>{if('{kind}'==='musique'){let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;play(n)}};
+lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:play(i));
+p.onended=()=>{if('{kind}'!=='films'){let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;play(n)}};
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
 </script></html>"""
 
@@ -288,11 +313,28 @@ def ligne_musique(i, titre, dossier, chemin, premier):
             f'<span>{html.escape(titre)}<small>{html.escape(dossier)}</small></span></li>')
 
 
+def carte_serie(nom, nb):
+    m = META.get("serie:" + nom) or {}
+    img = f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche") else '<div class="ph">📺</div>'
+    return (f'<li data-href="/?k=series&amp;s={html.escape(quote(nom))}">{img}{html.escape(nom)}'
+            f'<small>{nb} épisode{"s" if nb > 1 else ""}</small></li>')
+
+
+def page_serie(nom):
+    m = META.get("serie:" + nom) or {}
+    r = html.escape(m.get("resume", ""))
+    img = f'<img src="{html.escape(m["affiche"])}" alt="">' if m.get("affiche") else ""
+    intro = f'<div class="show">{img}<div><h2 id="dt">{html.escape(nom)}</h2><p id="dr">{r}</p></div></div>'
+    items = "".join(f'<li data-id="{i}" data-t="{html.escape(nom)} {html.escape(t)}" data-r="{r}">{html.escape(t)}</li>'
+                    for i, (t, d, _) in enumerate(LIB["series"]) if d == nom)
+    return intro, items
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         # Seuls les fichiers indexés sont servis (par numéro) : pas de traversée de chemin possible.
-        m = re.fullmatch(r"/(media/films|media/musique|cover)/(\d+)", url.path)
+        m = re.fullmatch(r"/(media/films|media/series|media/musique|cover)/(\d+)", url.path)
         if m:
             kind, idx = ("musique" if m[1] == "cover" else m[1][6:]), int(m[2])
             if idx >= len(LIB[kind]):
@@ -306,19 +348,29 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_file(cover)
         if url.path != "/":
             return self.send_error(404)
-        kind = parse_qs(url.query).get("k", ["films"])[0]
+        qs = parse_qs(url.query)
+        kind = qs.get("k", ["films"])[0]
         kind = kind if kind in LIB else "films"
+        intro, grid = '<h2 id="dt"></h2><p id="dr"></p>', kind == "films"
         if kind == "films":
             items = "".join(carte_film(i, t, c) for i, (t, _, c) in enumerate(LIB[kind]))
+        elif kind == "series" and "s" in qs:
+            intro, items = page_serie(qs["s"][0])
+        elif kind == "series":
+            nb = {}
+            for _, d, _ in LIB["series"]:
+                nb[d] = nb.get(d, 0) + 1
+            items, grid = "".join(carte_serie(n, c) for n, c in sorted(nb.items(), key=lambda x: x[0].lower())), True
         else:
             premier = {}
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
-        tag = "video" if kind == "films" else "audio"
-        body = (PAGE.replace("{f}", "on" if kind == "films" else "").replace("{m}", "on" if kind == "musique" else "")
-                .replace("{nf}", str(len(LIB["films"]))).replace("{nm}", str(len(LIB["musique"])))
-                .replace("{grid}", "grid" if kind == "films" else "")
-                .replace("{player}", ('' if kind == "films" else '<img id="pc" hidden alt="">') + f'<{tag} id="p" controls></{tag}>').replace("{items}", items)
-                .replace("{kind}", kind)).encode()
+        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio>' if kind == "musique" else '<video id="p" controls></video>'
+        body = PAGE
+        for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
+            n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
+            body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
+        body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
+                .replace("{items}", items).replace("{kind}", kind)).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -379,8 +431,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Media Center : films et musique")
+    ap = argparse.ArgumentParser(description="Media Center : films, séries et musique")
     ap.add_argument("--films", action="append", help="dossier de films (répétable)")
+    ap.add_argument("--series", action="append", help="dossier de séries TV (répétable)")
     ap.add_argument("--musique", action="append", help="dossier de musique (répétable)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--reseau", action="store_true", help="accessible depuis la TV/téléphone du réseau local")
@@ -388,20 +441,22 @@ def main():
     ap.add_argument("--hors-ligne", action="store_true", help="ne pas chercher les affiches sur internet")
     a = ap.parse_args()
 
-    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {"films": [], "musique": []}
-    if a.films or a.musique or a.tmdb:
-        cfg.update({k: v for k, v in (("films", a.films), ("musique", a.musique), ("tmdb", a.tmdb)) if v})
+    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+    nouveau = {"films": a.films, "series": a.series, "musique": a.musique, "tmdb": a.tmdb}
+    if any(nouveau.values()):
+        cfg.update({k: v for k, v in nouveau.items() if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
-    if not (cfg["films"] or cfg["musique"]):
-        sys.exit('Indique tes dossiers : python mediacenter.py --films "D:\\Films" --musique "D:\\Musique"')
-    for d in cfg["films"] + cfg["musique"]:
+    dossiers = {k: cfg.get(k, []) for k in LIB}
+    if not any(dossiers.values()):
+        sys.exit('Indique tes dossiers : python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musique "D:\\Musique"')
+    for d in sum(dossiers.values(), []):
         if not Path(d).is_dir():
             print(f"⚠ Dossier introuvable : {d}")
 
     if CACHE.exists():
         META.update(json.loads(CACHE.read_text("utf-8")))
-    scan({k: cfg[k] for k in LIB})
-    print(f"{len(LIB['films'])} films, {len(LIB['musique'])} morceaux trouvés.")
+    scan(dossiers)
+    print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés.")
     if not a.hors_ligne:
         threading.Thread(target=enrichir, args=(cfg.get("tmdb"),), daemon=True).start()
     host = "0.0.0.0" if a.reseau else "127.0.0.1"

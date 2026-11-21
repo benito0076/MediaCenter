@@ -1,5 +1,5 @@
 """python test_mediacenter.py"""
-from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree
+from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode
 import os, tempfile
 
 assert nettoyer("Le.Film.2024.1080p.x264-GRP") == ("Le Film", "2024")
@@ -36,4 +36,12 @@ with tempfile.TemporaryDirectory() as d:
     assert pochette_integree(os.path.join(d, "a.mp3")) == (IMG, "image/jpeg")
     assert pochette_integree(os.path.join(d, "b.flac")) == (IMG, "image/jpeg")
     assert pochette_integree(os.path.join(d, "c.mp3")) is None
+
+assert episode("The.Office.S02E05.Le.Bal.720p.WEB-DL", ("The Office",)) == ("The Office", "S02E05 – Le Bal")
+assert episode("s01e01", ("Breaking Bad (2008)", "Saison 1")) == ("Breaking Bad", "S01E01")
+assert episode("Kaamelott 3x12 FRENCH", ()) == ("Kaamelott", "S03E12")
+assert episode("Episode special", ("Lost",)) == ("Lost", "Episode special")
+tv = [{"name": "Lost", "first_air_date": "2004-09-22", "overview": "Crash…", "poster_path": "/l.jpg"}]
+assert choisir_tmdb(tv, "", "first_air_date")["titre"] == "Lost"
+assert choisir_tmdb(tv, "", "first_air_date")["annee"] == "2004"
 print("OK")
