@@ -5,7 +5,7 @@ Usage :  python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musiq
 Les dossiers sont mémorisés dans mediacenter.json ; ensuite `python mediacenter.py` suffit.
 Affiches et résumés : TMDB si une clé est donnée (--tmdb CLE), sinon iTunes ; gardés dans mediacenter_cache.json.
 """
-import argparse, html, json, math, mimetypes, os, re, shutil, subprocess, sys, threading, time, webbrowser
+import argparse, hashlib, html, json, math, mimetypes, os, re, shutil, subprocess, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, quote
@@ -26,7 +26,14 @@ LIB = {"films": [], "series": [], "musique": []}  # (titre, sous-dossier ou nom 
 META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "serie:<nom>" -> idem ; "album:<dossier>" -> {"affiche"} ; {} = introuvable
 COVERS = {}  # dossier de musique -> image locale (cover.jpg…), ou morceau avec pochette intégrée, ou None
 IMG = {".jpg", ".jpeg", ".png", ".webp"}
-SUBS = {}  # chemin vidéo -> [fichiers .srt/.vtt]
+SUBS = {}  # chemin vidéo -> [fichiers .srt/.vtt/.ass]
+JASSUB_DIR = Path(__file__).with_name("jassub")  # rendu stylé des .ass (libass en WebAssembly), servi en local
+POLICES_DIR = Path(__file__).with_name("polices_cache")  # polices extraites des MKV
+POLICES = {}  # chemin vidéo -> [fichiers de police]
+FONT_EXT = {".ttf", ".otf", ".ttc", ".woff", ".woff2"}
+for _ext, _type in ((".js", "text/javascript"), (".wasm", "application/wasm"), (".woff2", "font/woff2"),
+                    (".ttf", "font/ttf"), (".otf", "font/otf")):
+    mimetypes.add_type(_type, _ext)  # le registre Windows donne parfois text/plain pour .js : modules refusés
 FFMPEG, FFPROBE = shutil.which("ffmpeg"), shutil.which("ffprobe")  # optionnels : sous-titres intégrés
 PISTES = {}  # chemin vidéo -> [(nom, n° de piste de sous-titres)] (intégrées, format texte)
 VTT = {}  # (chemin vidéo, n° de piste) -> WebVTT extrait  # ponytail: en mémoire, vidé au redémarrage
@@ -247,23 +254,60 @@ def pistes_integrees(chemin):
             flux = json.loads(out or b"{}").get("streams", [])
         except (OSError, ValueError, subprocess.TimeoutExpired):
             flux = []
-        PISTES[chemin] = [(nom_piste(f), i) for i, f in enumerate(flux) if f.get("codec_name") in TEXTE]
+        PISTES[chemin] = [(nom_piste(f), i, f["codec_name"]) for i, f in enumerate(flux) if f.get("codec_name") in TEXTE]
     return PISTES[chemin]
 
 
-def extraire_vtt(chemin, piste):
-    if (chemin, piste) not in VTT:  # ffmpeg doit lire tout le fichier : quelques secondes sur un gros MKV
-        r = subprocess.run([FFMPEG, "-v", "error", "-i", chemin, "-map", f"0:s:{piste}", "-f", "webvtt", "-"],
+def extraire_piste(chemin, piste, fmt="webvtt"):
+    """Piste intégrée -> WebVTT, ou ASS brut (fmt="ass") pour le rendu stylé."""
+    if (chemin, piste, fmt) not in VTT:  # ffmpeg doit lire tout le fichier : quelques secondes sur un gros MKV
+        codec = ["-c:s", "copy"] if fmt == "ass" else []
+        r = subprocess.run([FFMPEG, "-v", "error", "-i", chemin, "-map", f"0:s:{piste}", *codec, "-f", fmt, "-"],
                            capture_output=True, timeout=600)
         if r.returncode:
             raise OSError(r.stderr.decode(errors="replace")[-300:])
-        VTT[chemin, piste] = r.stdout.decode("utf-8", errors="replace")
-    return VTT[chemin, piste]
+        VTT[chemin, piste, fmt] = r.stdout.decode("utf-8", errors="replace")
+    return VTT[chemin, piste, fmt]
 
 
-def noms_pistes(chemin):
-    """Toutes les pistes de sous-titres d'une vidéo : fichiers externes puis intégrées."""
-    return [nom_sous_titre(f, chemin) for f in SUBS.get(chemin, [])] + [n for n, _ in pistes_integrees(chemin)]
+def infos_pistes(chemin):
+    """Toutes les pistes de sous-titres d'une vidéo (fichiers externes puis intégrées) : [{"nom", "ass"}]."""
+    ext = [{"nom": nom_sous_titre(f, chemin), "ass": Path(f).suffix.lower() in (".ass", ".ssa")} for f in SUBS.get(chemin, [])]
+    return ext + [{"nom": n, "ass": codec in ("ass", "ssa")} for n, _, codec in pistes_integrees(chemin)]
+
+
+def polices(chemin):
+    """Polices pour le rendu .ass : dossier Fonts/ à côté de la vidéo + polices jointes au MKV (extraites une fois)."""
+    if chemin in POLICES:
+        return POLICES[chemin]
+    v, res = Path(chemin), []
+    try:
+        for d in v.parent.iterdir():
+            if d.is_dir() and d.name.lower() in ("fonts", "polices", "attachments"):
+                res += sorted(str(f) for f in d.iterdir() if f.suffix.lower() in FONT_EXT and f.is_file())
+    except OSError:
+        pass
+    if FFMPEG and FFPROBE and v.suffix.lower() == ".mkv":
+        try:
+            out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "t", "-show_entries",
+                                  "stream=index:stream_tags=filename", "-of", "json", chemin],
+                                 capture_output=True, timeout=30).stdout
+            jointes = [(f["index"], Path({k.lower(): x for k, x in f.get("tags", {}).items()}.get("filename", "")).suffix.lower())
+                       for f in json.loads(out or b"{}").get("streams", [])]
+            jointes = [(i, e) for i, e in jointes if e in FONT_EXT]
+            dest = POLICES_DIR / hashlib.sha1(chemin.encode()).hexdigest()[:16]
+            if jointes and not (dest.is_dir() and any(dest.iterdir())):
+                dest.mkdir(parents=True, exist_ok=True)
+                # Noms de fichiers choisis ici (pas ceux du MKV) : pas d'écriture hors du cache.
+                args = [a for k, (i, e) in enumerate(jointes) for a in (f"-dump_attachment:{i}", str(dest / f"{k}{e}"))]
+                subprocess.run([FFMPEG, "-v", "error", "-y", *args, "-i", chemin], capture_output=True, timeout=120)
+                # ffmpeg finit en erreur « aucune sortie » après l'extraction : normal, on regarde les fichiers.
+            if jointes and dest.is_dir():
+                res += sorted(str(f) for f in dest.iterdir())
+        except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
+            print(f"⚠ Polices non extraites ({v.name}) : {e}")
+    POLICES[chemin] = res
+    return res
 
 
 def scan(dossiers):
@@ -421,6 +465,11 @@ header{position:sticky;top:0;z-index:1;background:#1b1b1b;padding:12px 16px;disp
 a.tab{color:#aaa;text-decoration:none;padding:6px 12px;border-radius:6px}a.tab.on{background:#e50914;color:#fff}
 input{flex:1;min-width:160px;padding:8px;border-radius:6px;border:0;background:#2a2a2a;color:#eee}
 main{padding:16px}video,audio{width:100%;max-height:70vh;background:#000;border-radius:8px}video:not([src]){display:none}
+video.ass::cue{color:transparent;background:transparent;text-shadow:none}
+#vw{position:relative}#vw:fullscreen{background:#000;display:flex;align-items:center;justify-content:center}
+#vw:fullscreen video{max-height:100vh;height:100%;border-radius:0}
+#fs{position:absolute;top:8px;right:8px;background:#000a;color:#fff;border:0;border-radius:6px;font-size:18px;padding:2px 8px;cursor:pointer}
+video:not([src])~#fs{display:none}
 #dr{color:#bbb;max-width:80ch;line-height:1.5}
 ul{list-style:none;padding:0}li{padding:10px;border-bottom:1px solid #222;cursor:pointer}
 li:hover,li.on{background:#222}small{color:#888;margin-left:8px}
@@ -457,13 +506,29 @@ function play(i){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.
  if(vid&&last>5)p.addEventListener('loadedmetadata',()=>p.currentTime=last,{once:true});  // reprise
  p.src='/media/{kind}/'+l.dataset.id;
  p.querySelectorAll('track').forEach(t=>t.remove());
+ assOff();
  if(vid)fetch('/pistes/{kind}/'+l.dataset.id).then(r=>r.json()).then(st=>{if(lis[cur]!==l)return;  // déjà passé à une autre vidéo
-  const choix=Math.max(0,st.findIndex(lb=>/fr|vf/i.test(lb)));  // français de préférence
-  st.forEach((lb,n)=>{const t=document.createElement('track');
-   Object.assign(t,{kind:'subtitles',label:lb,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});p.appendChild(t)})});
+  const choix=Math.max(0,st.findIndex(s=>/fr|vf/i.test(s.nom)));  // français de préférence
+  st.forEach((s,n)=>{const t=document.createElement('track');
+   Object.assign(t,{kind:'subtitles',label:s.nom,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});
+   if(s.ass)t.dataset.ass='/ass/{kind}/'+l.dataset.id+'/'+n;p.appendChild(t)});setTimeout(majAss,300)});
  p.play();
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
+// Sous-titres .ass : rendu stylé par JASSUB par-dessus la vidéo ; la piste WebVTT simple reste en secours.
+let jas=null,assUrl=null;
+function assOff(){assUrl=null;if(jas){jas.destroy();jas=null}p.classList.remove('ass')}
+async function majAss(){const t=[...p.querySelectorAll('track')].find(t=>t.track.mode==='showing'),url=t&&t.dataset.ass||null;
+ if(url===assUrl)return;assOff();if(!url)return;assUrl=url;p.classList.add('ass');
+ try{const id=lis[cur].dataset.id,[{default:JASSUB},fonts]=await Promise.all([import('/jassub/jassub.js'),
+   fetch('/polices/{kind}/'+id).then(r=>r.json())]);
+  if(assUrl!==url)return;
+  jas=new JASSUB({video:p,subUrl:url,fonts,wasmUrl:'/jassub/wasm/jassub-worker-modern.wasm',
+   wasmWorkerUrl:'/jassub/wasm/jassub-worker-modern.js'});await jas.ready}
+ catch(e){console.warn('Rendu .ass indisponible, sous-titres simples :',e);if(assUrl===url){jas=null;p.classList.remove('ass')}}}
+if(vid){p.textTracks.onchange=majAss;const vw=document.getElementById('vw'),
+ fs=()=>document.fullscreenElement?document.exitFullscreen():vw.requestFullscreen();  // plein écran avec les sous-titres stylés
+ document.getElementById('fs').onclick=fs;p.ondblclick=fs}
 lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:play(i));
 p.onended=()=>{if('{kind}'!=='films'){let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;play(n)}};
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
@@ -523,24 +588,39 @@ class Handler(BaseHTTPRequestHandler):
             if cover and Path(cover).suffix.lower() in EXT["musique"]:
                 return self.send_bytes(*(pochette_integree(cover) or (b"", "")))
             return self.send_file(cover)
-        m = re.fullmatch(r"/(pistes|sub)/(films|series)/(\d+)(?:/(\d+))?", url.path)
-        if m and int(m[3]) < len(LIB[m[2]]) and (m[1] == "sub") == bool(m[4]):
+        m = re.fullmatch(r"/jassub/((?:worker/|wasm/)?[\w.-]+)", url.path)
+        if m:
+            f = JASSUB_DIR / m[1]
+            return self.send_file(str(f) if f.is_file() else None)
+        m = re.fullmatch(r"/(pistes|polices|sub|ass|police)/(films|series)/(\d+)(?:/(\d+))?", url.path)
+        if m and int(m[3]) < len(LIB[m[2]]) and (m[1] in ("sub", "ass", "police")) == bool(m[4]):
             chemin = LIB[m[2]][int(m[3])][2]
-            if m[1] == "pistes":
-                return self.send_bytes(json.dumps(noms_pistes(chemin), ensure_ascii=False).encode(),
-                                       "application/json")
-            n, ext, integ = int(m[4]), SUBS.get(chemin, []), pistes_integrees(chemin)
+            if m[1] in ("pistes", "polices"):
+                liste = infos_pistes(chemin) if m[1] == "pistes" else [
+                    f"/police/{m[2]}/{m[3]}/{k}" for k in range(len(polices(chemin)))]
+                return self.send_bytes(json.dumps(liste, ensure_ascii=False).encode(), "application/json")
+            n = int(m[4])
+            if m[1] == "police":
+                return self.send_file(polices(chemin)[n] if n < len(polices(chemin)) else None)
+            ext, integ = SUBS.get(chemin, []), pistes_integrees(chemin)
+            fmt = "ass" if m[1] == "ass" else "webvtt"
             try:
                 if n < len(ext):
-                    vtt = vers_vtt(lire_texte(ext[n]))
+                    texte = lire_texte(ext[n])
+                    if fmt == "ass" and Path(ext[n]).suffix.lower() not in (".ass", ".ssa"):
+                        return self.send_error(404)
                 elif n - len(ext) < len(integ):
-                    vtt = extraire_vtt(chemin, integ[n - len(ext)][1])
+                    if fmt == "ass" and integ[n - len(ext)][2] not in ("ass", "ssa"):
+                        return self.send_error(404)
+                    texte = extraire_piste(chemin, integ[n - len(ext)][1], fmt)
                 else:
                     return self.send_error(404)
             except (OSError, subprocess.TimeoutExpired) as e:
                 print(f"⚠ Sous-titres illisibles ({Path(chemin).name}) : {e}")
                 return self.send_error(404)
-            return self.send_bytes(vtt.encode(), "text/vtt; charset=utf-8")
+            if fmt == "ass":
+                return self.send_bytes(texte.encode(), "text/plain; charset=utf-8")
+            return self.send_bytes(vers_vtt(texte).encode(), "text/vtt; charset=utf-8")
         if url.path != "/":
             return self.send_error(404)
         qs = parse_qs(url.query)
@@ -559,7 +639,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             premier = {}
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
-        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio>' if kind == "musique" else '<video id="p" controls></video>'
+        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
+                                                                                         '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])

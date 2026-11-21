@@ -30,7 +30,12 @@ Films et épisodes reprennent là où tu les as arrêtés (barre rouge sous le t
 ## Sous-titres
 Les fichiers `.srt` / `.vtt` / `.ass` / `.ssa` sont détectés automatiquement : même nom que la vidéo (`Film.2020.srt`, `Film.2020.fr.srt`, `Film.2020.en.srt`) ou, si la vidéo est seule dans son dossier, tout `.srt` du dossier et d'un sous-dossier `Subs/`. Le français est activé par défaut ; change de langue ou coupe-les avec le bouton du lecteur (⋮ → Sous-titres, ou CC). Les accents des vieux `.srt` (Windows-1252) sont gérés.
 
-**Animés (`.ass`)** : le texte, l'italique et les panneaux placés en haut de l'écran sont gardés ; les polices, couleurs, positions précises et effets karaoké des fansubs ne le sont pas (le navigateur n'affiche que du texte simple).
+**Animés (`.ass` / `.ssa`) : rendu stylé** avec [JASSUB](https://github.com/ThaUnknown/jassub) (libass, le moteur de VLC/mpv, en WebAssembly) : polices, couleurs, contours, positions, panneaux, karaoké, comme dans un lecteur dédié. Marche pour les `.ass` à côté de la vidéo et, avec ffmpeg, pour ceux intégrés aux MKV.
+- Polices : celles jointes au MKV (extraites une fois dans `polices_cache/`) et celles d'un dossier `Fonts/` à côté de la vidéo ; sinon une police par défaut.
+- Plein écran : bouton ⛶ en haut à droite de la vidéo ou double-clic (le plein écran natif du navigateur cacherait les sous-titres stylés).
+- Navigateur trop ancien ou erreur : retour automatique aux sous-titres simples (texte + italique).
+
+JASSUB est fourni dans le dossier `jassub/` (version 2.5.38, licence LGPL, voir `jassub/LICENSE`), pré-assemblé avec esbuild : rien à installer, marche sans internet.
 
 **Sous-titres intégrés aux MKV** (et MP4) : installer [ffmpeg](https://ffmpeg.org) une fois, puis relancer :
 ```

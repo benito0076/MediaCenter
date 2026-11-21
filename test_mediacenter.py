@@ -83,6 +83,15 @@ assert nom_piste({}) == "Intégrés"
 import mediacenter
 mediacenter.FFPROBE = None
 assert mediacenter.pistes_integrees("film.mkv") == []
+with tempfile.TemporaryDirectory() as d:
+    D = Path(d)
+    (D / "Fonts").mkdir()
+    for f in ["Ep.mkv", "Ep.fr.ass", "Ep.en.srt", "Fonts/A.ttf", "Fonts/b.OTF", "Fonts/lisez-moi.txt"]:
+        (D / f).write_bytes(b"")
+    v = str(D / "Ep.mkv")
+    mediacenter.SUBS[v] = mediacenter.sous_titres(Path(v), True)
+    assert mediacenter.infos_pistes(v) == [{"nom": "en", "ass": False}, {"nom": "fr", "ass": True}]
+    assert [Path(f).name for f in mediacenter.polices(v)] == ["A.ttf", "b.OTF"]
 
 ASS = """[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname\nStyle: Default,Arial\n\n[Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
