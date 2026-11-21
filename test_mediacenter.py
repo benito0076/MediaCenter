@@ -286,4 +286,8 @@ assert rangs["▶ Reprendre"][1][4] == 10 and rangs["▶ Reprendre"][1][0] == "/
 assert [(c[2], c[3]) for c in rangs["⏭ Épisodes suivants"]] == [("Lost", "S01E02")]  # Dark : plus d'épisode après
 assert rangs["⏭ Épisodes suivants"][0][0] == "/?k=series&s=Lost&jouer=1"
 assert [c[2] for c in rangs["🆕 Ajoutés récemment"]] == ["Lost", "Dark", "Alien", "Dune"]  # Lost une seule fois
+pl = mediacenter.playlist_hls(15.5)
+assert pl.splitlines()[-1] == "#EXT-X-ENDLIST" and pl.count(".ts") == 3 and "#EXTINF:3.500," in pl, pl
+c = mediacenter.commande_segment("/f.avi", 2)
+assert c[c.index("-ss") + 1] == "12" and c[c.index("-output_ts_offset") + 1] == "12" and c[c.index("-t") + 1] == "6"
 print("OK")

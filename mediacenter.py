@@ -40,6 +40,7 @@ META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "serie:
 COVERS = {}  # dossier de musique -> image locale (cover.jpg…), ou morceau avec pochette intégrée, ou None
 IMG = {".jpg", ".jpeg", ".png", ".webp"}
 SUBS = {}  # chemin vidéo -> [fichiers .srt/.vtt/.ass]
+HLSJS_DIR = RESSOURCES / "hlsjs"  # hls.js : lecture des vidéos converties à la volée (HLS)
 JASSUB_DIR = RESSOURCES / "jassub"  # rendu stylé des .ass (libass en WebAssembly), servi en local
 POLICES_DIR = BASE / "polices_cache"  # polices extraites des MKV
 POLICES = {}  # chemin vidéo -> [fichiers de police]
@@ -565,6 +566,49 @@ def nettoyer_polices(jours=60):
             shutil.rmtree(d, ignore_errors=True)
 
 
+VIDEO_OK = {"h264", "vp8", "vp9", "av1"}  # codecs vidéo lus par les navigateurs
+CONTENEURS_OK = {".mp4", ".m4v", ".webm", ".mkv", ".mov"}
+LECTURE = {}  # chemin -> {"hls": conversion nécessaire, "duree": s}
+SEG = 6  # durée d'un morceau HLS (s)
+
+
+def besoin_conversion(chemin):
+    """Le navigateur ne sait pas lire cette vidéo (AVI, HEVC/H.265, MPEG-4 Part 2, H.264 10 bits…) : conversion à la volée."""
+    if not (FFMPEG and FFPROBE):
+        return False
+    if chemin not in LECTURE:
+        try:
+            out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                  "stream=codec_name,pix_fmt:format=duration", "-of", "json", chemin],
+                                 capture_output=True, timeout=30).stdout
+            info = json.loads(out or b"{}")
+            v = (info.get("streams") or [{}])[0]
+            codec, pix, duree = v.get("codec_name"), v.get("pix_fmt") or "", float(info.get("format", {}).get("duration") or 0)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            codec, pix, duree = None, "", 0
+        hls = codec is not None and duree > 0 and (Path(chemin).suffix.lower() not in CONTENEURS_OK or codec not in VIDEO_OK
+                                                   or (codec == "h264" and "10" in pix))
+        LECTURE[chemin] = {"hls": hls, "duree": duree}
+    return LECTURE[chemin]["hls"]
+
+
+def playlist_hls(duree):
+    """Liste HLS « à la demande » : tous les morceaux de SEG s sont annoncés, chacun est converti quand on le demande."""
+    lignes = ["#EXTM3U", "#EXT-X-VERSION:3", f"#EXT-X-TARGETDURATION:{SEG}", "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:VOD"]
+    for k in range(max(1, math.ceil(duree / SEG))):
+        lignes += [f"#EXTINF:{min(SEG, duree - k * SEG):.3f},", f"{k}.ts"]
+    return "\n".join(lignes + ["#EXT-X-ENDLIST", ""])
+
+
+def commande_segment(chemin, k):
+    """ffmpeg : morceau k (H.264 + AAC stéréo, MPEG-TS) avec les horodatages du film entier (avance/retour exacts)."""
+    debut = k * SEG
+    return [FFMPEG, "-v", "error", "-ss", str(debut), "-i", chemin, "-t", str(SEG), "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-vf", "scale='min(1920,iw)':-2",
+            "-force_key_frames", "expr:gte(t,0)", "-c:a", "aac", "-ac", "2", "-ar", "48000", "-b:a", "160k",
+            "-output_ts_offset", str(debut), "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", "pipe:1"]
+
+
 def nom_canaux(n):
     return {3: "2.1", 4: "4.0", 5: "5.0", 6: "5.1", 7: "6.1", 8: "7.1"}.get(n, f"{n} canaux")
 
@@ -1017,7 +1061,8 @@ ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.sh
 <main>{player}{intro}<ul id="l" class="{grid}">{items}</ul>{pied}</main>
 <script>
 const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];let cur=-1;
-const vid='{kind}'!=='musique';let last=0,proprio=false,geste=0;const APPAREIL=Math.random().toString(36).slice(2);  // proprio : cet appareil joue (ou a joué) le morceau en cours
+const vid='{kind}'!=='musique';let last=0,proprio=false,geste=0;const APPAREIL=(()=>{try{let a=sessionStorage.getItem('appareil');  // même onglet = même appareil, même après rechargement
+ if(!a)sessionStorage.setItem('appareil',a=Math.random().toString(36).slice(2));return a}catch(e){return Math.random().toString(36).slice(2)}})();  // proprio : cet appareil joue (ou a joué) le morceau en cours
 function envoi(l,data){navigator.sendBeacon('/suivi/{kind}/'+l.dataset.id,JSON.stringify(data))}
 function save(){if(!vid){if(cur>=0&&proprio)navigator.sendBeacon('/encours',  // musique : morceau en cours, commun aux appareils
   JSON.stringify({k:lis[cur].dataset.k,t:p.currentTime||0,lecture:!p.paused,dev:APPAREIL,vol:p.volume}));return}
@@ -1028,18 +1073,32 @@ p.ontimeupdate=()=>{if(Math.abs(p.currentTime-last)>10){last=p.currentTime;save(
 p.onpause=save;addEventListener('pagehide',save);
 document.querySelectorAll('.ck').forEach(b=>b.onclick=e=>{e.stopPropagation();const l=b.closest('li'),v=!l.classList.contains('vu');
  l.classList.toggle('vu',v);l.dataset.pos=0;const bar=l.querySelector('.bar');if(bar)bar.remove();envoi(l,{vu:v})});
+// Source : lecture directe, ou conversion à la volée par le PC (HLS) si le navigateur ne sait pas lire la vidéo.
+let hls=null;window.enHls=false;const FFMPEG_OK='{ffmpeg}';
+async function source(l,auto){if(hls){hls.destroy();hls=null}enHls=false;
+ const direct='/media/{kind}/'+l.dataset.id,lance=()=>{if(auto)p.play().catch(()=>{})};  // interrompu par un changement : normal
+ let d={};if(vid&&FFMPEG_OK)try{d=await (await fetch('/lecture/{kind}/'+l.dataset.id)).json()}catch(e){}
+ if(lis[cur]!==l)return;
+ if(d.hls)return versHls(l,lance);
+ p.src=direct;lance();
+ if(vid&&FFMPEG_OK)p.addEventListener('error',()=>{if(lis[cur]===l&&!enHls)versHls(l,lance)},{once:true})}  // illisible malgré tout
+async function versHls(l,lance){enHls=true;const url='/hls/{kind}/'+l.dataset.id+'/index.m3u8';
+ if(window.MediaSource){if(!window.Hls)await new Promise((ok,ko)=>{const s=document.createElement('script');
+   s.src='/hlsjs/hls.light.min.js';s.onload=ok;s.onerror=ko;document.head.append(s)});
+  if(lis[cur]!==l)return;hls=new Hls({maxBufferLength:30});hls.loadSource(url);hls.attachMedia(p)}
+ else p.src=url;  // Safari / iPhone : HLS natif
+ lance()}
 function play(i,auto=true){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.remove('on'));
  cur=i;const l=lis[i];l.classList.add('on');last=+l.dataset.pos||0;
  if(vid&&last>5)p.addEventListener('loadedmetadata',()=>p.currentTime=last,{once:true});  // reprise
- p.src='/media/{kind}/'+l.dataset.id;
+ const pret=source(l,auto);
  p.querySelectorAll('track').forEach(t=>t.remove());
- assOff();if(window.audioReset)audioReset(l);{const a=document.getElementById('amp');if(a)a.hidden=!AMPLI}
+ assOff();if(window.audioReset)pret.then(()=>audioReset(l));{const a=document.getElementById('amp');if(a)a.hidden=!AMPLI}
  if(vid)fetch('/pistes/{kind}/'+l.dataset.id).then(r=>r.json()).then(st=>{if(lis[cur]!==l)return;  // déjà passé à une autre vidéo
   const choix=Math.max(0,st.findIndex(s=>/fr|vf/i.test(s.nom)));  // français de préférence
   st.forEach((s,n)=>{const t=document.createElement('track');
    Object.assign(t,{kind:'subtitles',label:s.nom,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});
    if(s.ass)t.dataset.ass='/ass/{kind}/'+l.dataset.id+'/'+n;p.appendChild(t)});setTimeout(majAss,300)});
- if(auto)p.play().catch(()=>{});  // interrompu par un changement de morceau : normal
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
 document.getElementById('rs').onclick=async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='⏳';
@@ -1081,7 +1140,7 @@ if(vid){const pa=new Audio(),pas=document.getElementById('pas'),pal=document.get
  function natif(){paActif=false;pa.pause();pa.removeAttribute('src');pa.load();p.muted=false}
  window.choisirAudio=async n=>{const l=lis[cur],id=l.dataset.id,jeton=++demande;audioIdx=n;pas.value=String(n);pae.textContent='';
   if(window.etatVideo)etatVideo();
-  if(n===0&&!(auListe[0]||{}).convertir)return natif();  // piste d'origine lisible : rien à faire
+  if(n===0&&(!(auListe[0]||{}).convertir||enHls))return natif();  // piste d'origine lisible (ou déjà convertie en HLS)
   pae.textContent='préparation de la piste… (jusqu’à une minute la première fois)';
   for(;;){let e;try{e=(await (await fetch('/audio-etat/{kind}/'+id+'/'+n)).json()).etat}catch(x){e='erreur réseau'}
    if(jeton!==demande)return;if(e==='pret')break;if(e!=='en cours'){pae.textContent=e;return}await new Promise(r=>setTimeout(r,2000))}
@@ -1094,7 +1153,7 @@ if(vid){const pa=new Audio(),pas=document.getElementById('pas'),pal=document.get
   pas.replaceChildren(...auListe.map((a,j)=>{const o=document.createElement('option');o.value=String(j);
    o.textContent=a.nom+(a.convertir?' – convertie':'');return o}));
   pal.hidden=auListe.length<2&&!(auListe[0]||{}).convertir;
-  if((auListe[0]||{}).convertir)choisirAudio(0);  // son illisible par le navigateur (AC3, DTS…) : converti d'office
+  if((auListe[0]||{}).convertir&&!enHls)choisirAudio(0);  // son illisible (AC3, DTS…) : converti d'office
   if(window.etatVideo)etatVideo()}}
 {const cv=document.getElementById('cv');if(cv)cv.onclick=async()=>{
  if(!confirm('Supprimer les pistes audio converties ? Elles seront reconverties si tu les rechoisis.'))return;
@@ -1311,6 +1370,23 @@ class Handler(BaseHTTPRequestHandler):
             if cover and Path(cover).suffix.lower() in EXT["musique"]:
                 return self.send_bytes(*(pochette_integree(cover) or (b"", "")))
             return self.send_file(cover)
+        if url.path == "/hlsjs/hls.light.min.js":
+            return self.send_file(str(HLSJS_DIR / "hls.light.min.js"))
+        m = re.fullmatch(r"/(lecture|hls)/(films|series)/(\d+)(?:/(index\.m3u8|\d+\.ts))?", url.path)
+        if m and int(m[3]) < len(LIB[m[2]]) and (m[1] == "hls") == bool(m[4]):
+            chemin = LIB[m[2]][int(m[3])][2]
+            if m[1] == "lecture":
+                return self.send_bytes(json.dumps({"hls": besoin_conversion(chemin)}).encode(), "application/json")
+            besoin_conversion(chemin)
+            duree = LECTURE.get(chemin, {}).get("duree", 0)
+            if not FFMPEG or duree <= 0:
+                return self.send_error(404)
+            if m[4] == "index.m3u8":
+                return self.send_bytes(playlist_hls(duree).encode(), "application/vnd.apple.mpegurl")
+            k = int(m[4][:-3])
+            if k * SEG >= duree:
+                return self.send_error(404)
+            return self.send_segment(commande_segment(chemin, k))
         m = re.fullmatch(r"/jassub/((?:worker/|wasm/)?[\w.-]+)", url.path)
         if m:
             f = JASSUB_DIR / m[1]
@@ -1414,7 +1490,7 @@ class Handler(BaseHTTPRequestHandler):
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
         body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
                 .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)
-                .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "")).encode()
+                .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "").replace("{ffmpeg}", "1" if FFMPEG and FFPROBE else "")).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -1436,6 +1512,21 @@ document.getElementById('rs').onclick=async()=>{await fetch('/rescan',{method:'P
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_segment(self, cmd):
+        """Envoie la sortie de ffmpeg au fur et à mesure ; si le navigateur abandonne (avance rapide), ffmpeg est arrêté."""
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp2t")
+            self.end_headers()
+            while morceau := proc.stdout.read(65536):
+                self.wfile.write(morceau)
+        except (ConnectionError, BrokenPipeError):
+            pass
+        finally:
+            proc.kill()
+            proc.wait()
 
     def send_bytes(self, data, mime):
         if not data:

@@ -17,7 +17,7 @@ jobs:
       - name: Fabrication du .exe
         run: |
           pip install pyinstaller==6.11.1
-          pyinstaller --onefile --name MediaCenter --add-data "jassub;jassub" mediacenter.py
+          pyinstaller --onefile --name MediaCenter --add-data "jassub;jassub" --add-data "hlsjs;hlsjs" mediacenter.py
       - name: Essai du .exe (démarrage, page, JASSUB embarqué)
         shell: pwsh
         run: |
@@ -26,10 +26,12 @@ jobs:
           Start-Sleep 8
           $page = Invoke-WebRequest http://localhost:8765/ -UseBasicParsing
           $js = Invoke-WebRequest http://localhost:8765/jassub/jassub.js -UseBasicParsing
+          $hls = Invoke-WebRequest http://localhost:8765/hlsjs/hls.light.min.js -UseBasicParsing
           Stop-Process $p
           Get-Content sortie.txt
           if ($page.Content -notmatch 'Media Center') { throw 'page absente' }
           if ($js.Headers['Content-Type'] -notmatch 'javascript') { throw 'JASSUB absent du .exe' }
+          if ($hls.Content.Length -lt 100000) { throw 'hls.js absent du .exe' }
           if (-not (Test-Path dist\mediacenter.json)) { throw 'config pas à côté du .exe' }
           "OK : page servie, JASSUB embarqué, config à côté du .exe"
       - uses: actions/upload-artifact@v4
