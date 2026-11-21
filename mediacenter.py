@@ -18,7 +18,10 @@ SUIVI_F = Path(__file__).with_name("mediacenter_suivi.json")
 FILE_F = Path(__file__).with_name("mediacenter_file.json")
 FILE = []  # file d'attente musique commune à tous les appareils : ["dossier/fichier", …]
 ENCOURS_F = Path(__file__).with_name("mediacenter_encours.json")
-ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "quand"}
+ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "dev", "quand"}
+COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
+RELEVE = {}  # id d'appareil -> heure du dernier relevé de commandes (= page ouverte, joignable)
+ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer"}
 SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
 VERROU = threading.Lock()
 EXT = {
@@ -477,6 +480,14 @@ def valider_encours(data):
     return {"k": k, "t": round(t, 1), "lecture": lecture, "dev": dev, "quand": time.time()}
 
 
+def valider_commande(data):
+    """{"cmd": ordre, "k": clé du morceau (pour « jouer »)} envoyé par la télécommande, ou ValueError."""
+    cmd, k = data["cmd"], data.get("k", "")
+    if cmd not in ORDRES or not isinstance(k, str) or len(k) >= 2000 or (cmd == "jouer" and not k):
+        raise ValueError("commande invalide")
+    return {"cmd": cmd, "k": k}
+
+
 def accepter_encours(actuel, nouveau):
     """Un appareil qui se met en pause n'écrase pas un autre appareil qui joue encore (passage de relais)."""
     return not (actuel.get("lecture") and not nouveau["lecture"] and actuel.get("dev") != nouveau["dev"]
@@ -510,6 +521,7 @@ ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;fon
 .bt{margin:8px 6px 0 0;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
 #sv,#pv{color:#eee}
 .qn+.qa{margin-left:0}.qn,.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qn:hover,.qa:hover,.fi button:hover{color:#fff}
+#tc{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#tc .bt{font-size:18px}
 #fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
 .fi{display:flex;align-items:center;padding:6px 0;cursor:grab;border-top:1px solid #262626}.fi:hover{color:#fff}
 .fi button+button{margin-left:0}.fi.glisse{opacity:.4}.fi.cible{border-top:2px solid #e50914}.bt[aria-pressed=true]{background:#e50914;color:#fff}
@@ -563,7 +575,9 @@ async function majAss(){const t=[...p.querySelectorAll('track')].find(t=>t.track
 if(vid){p.textTracks.onchange=majAss;const vw=document.getElementById('vw'),
  fs=()=>document.fullscreenElement?document.exitFullscreen():vw.requestFullscreen();  // plein écran avec les sous-titres stylés
  document.getElementById('fs').onclick=fs;p.ondblclick=fs}
-lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:play(i));
+let distant=false;  // télécommande : un autre appareil joue, les clics le pilotent
+function commande(cmd,k){fetch('/commande',{method:'POST',body:JSON.stringify({cmd,k})}).catch(()=>{})}
+lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:distant?commande('jouer',l.dataset.k):play(i));
 // Musique : aléatoire (chaque morceau visible une fois) ; bouton répéter : non → tout → un seul morceau → non.
 const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=0,joues=new Set(),hist=[];  // hist : morceaux joués en aléatoire, pour « précédent »
 try{alea=localStorage.getItem('alea')==='1';repete=Math.min(2,+localStorage.getItem('repete')||0)}catch(e){}
@@ -608,11 +622,21 @@ if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagati
  // appuyer sur ▶ reprend alors la lecture ici. Les navigateurs interdisent de lancer le son tout seul.
  p.addEventListener('play',()=>{proprio=true;save()});
  for(const ev of ['pointerdown','keydown'])p.addEventListener(ev,()=>{geste=Date.now()});  // curseur déplacé à la main
- async function suivreEncours(){if(!p.paused||Date.now()-geste<15000)return;try{const e=await (await fetch('/encours')).json(),i=parK.get(e.k);
-  if(i===undefined||!p.paused)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);  // > 30 s sans nouvelles : appareil éteint
+ const tc=document.getElementById('tc'),tcpp=document.getElementById('tcpp');
+ async function suivreEncours(){try{const e=await (await fetch('/encours?dev='+APPAREIL)).json(),i=parK.get(e.k);
+  // Télécommande visible si un autre appareil, page ouverte, a le morceau en cours et que celui-ci ne joue pas ici.
+  distant=!!(e.k&&!e.moi&&e.joignable&&p.paused);tc.hidden=!distant;
+  if(distant&&i!==undefined){document.getElementById('tct').textContent='Sur un autre appareil : '+lis[i].dataset.t+(e.lecture?' (lecture)':' (pause)');
+   tcpp.textContent=e.lecture?'⏸':'▶';tcpp.onclick=()=>commande(e.lecture?'pause':'lecture')}
+  if(!p.paused||Date.now()-geste<15000||i===undefined)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);  // > 30 s sans nouvelles : appareil éteint
   if(i===cur&&Math.abs(p.currentTime-t)<3)return;proprio=false;
   if(i!==cur){p.addEventListener('loadedmetadata',()=>{p.currentTime=t},{once:true});play(i,false)}else p.currentTime=t}catch(e){}}
- suivreEncours();setInterval(suivreEncours,5000)}
+ tc.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>commande(b.dataset.c));
+ suivreEncours();setInterval(suivreEncours,2000);
+ // Appareil qui joue : exécute les ordres de la télécommande (relevés chaque seconde).
+ setInterval(async()=>{if(!proprio)return;try{for(const c of await (await fetch('/commande?dev='+APPAREIL)).json()){
+  if(c.cmd==='lecture')p.play().catch(()=>{});else if(c.cmd==='pause')p.pause();else if(c.cmd==='suivant')suivant();
+  else if(c.cmd==='precedent')precedent();else if(c.cmd==='jouer'&&parK.has(c.k))play(parK.get(c.k))}}catch(e){}},1000)}
 function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.shift();majFile();return play(n)}
  if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
  let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)}
@@ -621,9 +645,10 @@ function precedent(){const debut=()=>{p.currentTime=0};if(cur<0||p.currentTime>3
  if(alea)return hist.length?play(hist.pop()):debut();
  let n=cur-1;while(n>=0&&lis[n].hidden)n--;if(n<0&&repete)n=visibles().pop();n>=0?play(n):debut()}
 p.onended=()=>{if('{kind}'!=='films')suivant()};
-if(al){document.getElementById('sv').onclick=suivant;  // marche aussi en « Répéter 1 » : on passe quand même au suivant
- document.getElementById('pv').onclick=precedent;
- try{navigator.mediaSession.setActionHandler('nexttrack',suivant);navigator.mediaSession.setActionHandler('previoustrack',precedent)}
+const sv2=()=>distant?commande('suivant'):suivant(),pv2=()=>distant?commande('precedent'):precedent();  // à distance si besoin
+if(al){document.getElementById('sv').onclick=sv2;  // marche aussi en « Répéter 1 » : on passe quand même au suivant
+ document.getElementById('pv').onclick=pv2;
+ try{navigator.mediaSession.setActionHandler('nexttrack',sv2);navigator.mediaSession.setActionHandler('previoustrack',pv2)}
  catch(e){}}  // touches ⏮ ⏭ du clavier / casque
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
 </script></html>"""
@@ -720,11 +745,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(vers_vtt(texte).encode(), "text/vtt; charset=utf-8")
         if url.path == "/file":
             return self.send_bytes(json.dumps(FILE, ensure_ascii=False).encode(), "application/json")
+        if url.path == "/commande":  # relevé par l'appareil qui joue, chaque seconde
+            dev = parse_qs(url.query).get("dev", [""])[0][:100]
+            with VERROU:
+                RELEVE[dev] = time.time()
+                liste = COMMANDES.pop(dev, [])
+            return self.send_bytes(json.dumps(liste, ensure_ascii=False).encode(), "application/json")
         if url.path == "/encours":
-            e = dict(ENCOURS)
+            e, moi = dict(ENCOURS), parse_qs(url.query).get("dev", [""])[0]
             if e:
                 e["age"] = round(time.time() - e.pop("quand"), 1)
-                e.pop("dev", None)
+                dev = e.pop("dev", "")
+                e["moi"] = dev == moi  # l'id des autres appareils n'est pas divulgué
+                e["joignable"] = time.time() - RELEVE.get(dev, 0) < 5
             return self.send_bytes(json.dumps(e, ensure_ascii=False).encode(), "application/json")
         if url.path != "/":
             return self.send_error(404)
@@ -745,6 +778,8 @@ class Handler(BaseHTTPRequestHandler):
             premier = {}
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
         player = ('<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="pv" class="bt" title="Morceau précédent (ou début du morceau)">⏮ Précédent</button><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>'
+                  '<div id="tc" hidden>🎛 <span id="tct"></span><br><button class="bt" data-c="precedent" aria-label="Précédent (à distance)">⏮</button>'
+                  '<button class="bt" id="tcpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-c="suivant" aria-label="Suivant (à distance)">⏭</button></div>'
                   '<div id="fa" hidden><b>À suivre</b> <button id="fv" class="bt">Vider la file</button><div id="fl"></div></div>') if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
         body = PAGE
@@ -809,6 +844,22 @@ class Handler(BaseHTTPRequestHandler):
             pass  # le navigateur a coupé (seek / pause) : normal
 
     def do_POST(self):
+        if urlparse(self.path).path == "/commande":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                if n > 5000:
+                    raise ValueError("trop gros")
+                c = valider_commande(json.loads(self.rfile.read(n)))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                return self.send_error(400)
+            with VERROU:
+                cible = ENCOURS.get("dev")
+                if not cible or time.time() - RELEVE.get(cible, 0) > 5:
+                    return self.send_error(409)  # personne ne joue (ou page fermée)
+                COMMANDES.setdefault(cible, []).append(c)
+                del COMMANDES[cible][:-20]
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/encours":
             n = int(self.headers.get("Content-Length") or 0)
             try:
