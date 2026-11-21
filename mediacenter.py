@@ -5,7 +5,7 @@ Usage :  python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musiq
 Les dossiers sont mémorisés dans mediacenter.json ; ensuite `python mediacenter.py` suffit.
 Affiches et résumés : TMDB si une clé est donnée (--tmdb CLE), sinon iTunes ; gardés dans mediacenter_cache.json.
 """
-import argparse, html, json, mimetypes, os, re, sys, threading, time, webbrowser
+import argparse, html, json, math, mimetypes, os, re, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, quote
@@ -14,6 +14,9 @@ from urllib.request import Request, urlopen
 
 CONFIG = Path(__file__).with_name("mediacenter.json")
 CACHE = Path(__file__).with_name("mediacenter_cache.json")
+SUIVI_F = Path(__file__).with_name("mediacenter_suivi.json")
+SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
+VERROU = threading.Lock()
 EXT = {
     "films": {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v"},
     "series": {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v"},
@@ -258,6 +261,32 @@ def enrichir(cle=None):
         time.sleep(3)
 
 
+def maj_suivi(e, data):
+    """Nouvel état de suivi d'une vidéo après un envoi du navigateur : {"t", "d"} ou {"vu": bool}."""
+    e = dict(e)
+    if "vu" in data:  # case cochée à la main
+        e.update(vu=bool(data["vu"]), t=0)
+        return e
+    t, d = float(data["t"]), float(data.get("d") or 0)
+    if not (math.isfinite(t) and math.isfinite(d) and 0 <= t < 1e6 and 0 <= d < 1e6):
+        raise ValueError("position invalide")
+    if d:
+        e["d"] = d
+    if d and t > 0.9 * d:  # générique de fin atteint : vu, et la prochaine fois on repart du début
+        e.update(vu=True, t=0)
+    else:
+        e["t"] = round(t, 1)
+    return e
+
+
+def suivi(chemin):
+    """(attributs du <li>, HTML de la barre de progression + case « vu »)"""
+    e = SUIVI.get(Path(chemin).name, {})
+    pct = min(100, int(100 * e["t"] / e["d"])) if e.get("t") and e.get("d") else 0
+    attrs = f' data-pos="{e.get("t", 0)}"' + (' class="vu"' if e.get("vu") else "")
+    return attrs, (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + '<b class="ck" title="Vu / pas vu">✓</b>'
+
+
 PAGE = """<!doctype html><html lang="fr"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Media Center</title>
 <style>
@@ -272,6 +301,9 @@ li:hover,li.on{background:#222}small{color:#888;margin-left:8px}
 ul.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:16px}
 ul.grid li{border:0;padding:6px;border-radius:8px}ul.grid small{display:block;margin:0}
 [hidden]{display:none!important}
+li{position:relative}.bar{position:absolute;left:0;bottom:0;height:3px;background:#e50914}
+.ck{margin-left:auto;padding:0 8px;opacity:.25;cursor:pointer}li.vu .ck{opacity:1;color:#4caf50}li.vu{color:#999}
+ul.grid .ck{position:absolute;top:12px;right:12px;background:#000b;border-radius:50%;padding:2px 7px}
 ul:not(.grid) li{display:flex;align-items:center;gap:12px}
 ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;font-size:20px;margin:0;flex:none}
 #pc{width:220px;height:220px;object-fit:cover;border-radius:8px;display:block;margin-bottom:12px}
@@ -286,8 +318,18 @@ ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.sh
 <main>{player}{intro}<ul id="l" class="{grid}">{items}</ul></main>
 <script>
 const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];let cur=-1;
-function play(i){if(i<0||i>=lis.length)return;lis.forEach(l=>l.classList.remove('on'));
- cur=i;const l=lis[i];l.classList.add('on');p.src='/media/{kind}/'+l.dataset.id;p.play();
+const vid='{kind}'!=='musique';let last=0;
+function envoi(l,data){navigator.sendBeacon('/suivi/{kind}/'+l.dataset.id,JSON.stringify(data))}
+function save(){if(!vid||cur<0||!(p.currentTime>1))return;const l=lis[cur];envoi(l,{t:p.currentTime,d:p.duration||0});
+ l.dataset.pos=p.currentTime;if(p.duration&&p.currentTime>.9*p.duration){l.classList.add('vu');l.dataset.pos=0}}
+p.ontimeupdate=()=>{if(Math.abs(p.currentTime-last)>10){last=p.currentTime;save()}};
+p.onpause=save;addEventListener('pagehide',save);
+document.querySelectorAll('.ck').forEach(b=>b.onclick=e=>{e.stopPropagation();const l=b.closest('li'),v=!l.classList.contains('vu');
+ l.classList.toggle('vu',v);l.dataset.pos=0;const bar=l.querySelector('.bar');if(bar)bar.remove();envoi(l,{vu:v})});
+function play(i){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.remove('on'));
+ cur=i;const l=lis[i];l.classList.add('on');last=+l.dataset.pos||0;
+ if(vid&&last>5)p.addEventListener('loadedmetadata',()=>p.currentTime=last,{once:true});  // reprise
+ p.src='/media/{kind}/'+l.dataset.id;p.play();
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
 lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:play(i));
@@ -300,8 +342,9 @@ def carte_film(i, titre, chemin):
     m = META.get(Path(chemin).name) or {}
     t, a = m.get("titre") or titre, m.get("annee", "")
     img = f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche") else '<div class="ph">🎬</div>'
-    return (f'<li data-id="{i}" data-t="{html.escape(t)}{" (" + a + ")" if a else ""}" data-r="{html.escape(m.get("resume", ""))}">'
-            f'{img}{html.escape(t)}<small>{a}</small></li>')
+    attrs, extra = suivi(chemin)
+    return (f'<li data-id="{i}" data-t="{html.escape(t)}{" (" + a + ")" if a else ""}" data-r="{html.escape(m.get("resume", ""))}"{attrs}>'
+            f'{img}{html.escape(t)}<small>{a}</small>{extra}</li>')
 
 
 def ligne_musique(i, titre, dossier, chemin, premier):
@@ -315,9 +358,11 @@ def ligne_musique(i, titre, dossier, chemin, premier):
 
 def carte_serie(nom, nb):
     m = META.get("serie:" + nom) or {}
+    vus = sum(1 for _, d, c in LIB["series"] if d == nom and SUIVI.get(Path(c).name, {}).get("vu"))
+    vus_txt = (f" · {vus} vu" + ("s" if vus > 1 else "")) if vus else ""
     img = f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche") else '<div class="ph">📺</div>'
     return (f'<li data-href="/?k=series&amp;s={html.escape(quote(nom))}">{img}{html.escape(nom)}'
-            f'<small>{nb} épisode{"s" if nb > 1 else ""}</small></li>')
+            f'<small>{nb} épisode{"s" if nb > 1 else ""}{vus_txt}</small></li>')
 
 
 def page_serie(nom):
@@ -325,8 +370,8 @@ def page_serie(nom):
     r = html.escape(m.get("resume", ""))
     img = f'<img src="{html.escape(m["affiche"])}" alt="">' if m.get("affiche") else ""
     intro = f'<div class="show">{img}<div><h2 id="dt">{html.escape(nom)}</h2><p id="dr">{r}</p></div></div>'
-    items = "".join(f'<li data-id="{i}" data-t="{html.escape(nom)} {html.escape(t)}" data-r="{r}">{html.escape(t)}</li>'
-                    for i, (t, d, _) in enumerate(LIB["series"]) if d == nom)
+    items = "".join(f'<li data-id="{i}" data-t="{html.escape(nom)} {html.escape(t)}" data-r="{r}"{a}>{html.escape(t)}{x}</li>'
+                    for i, (t, d, c) in enumerate(LIB["series"]) if d == nom for a, x in [suivi(c)])
     return intro, items
 
 
@@ -426,6 +471,22 @@ class Handler(BaseHTTPRequestHandler):
         except (ConnectionError, BrokenPipeError):
             pass  # le navigateur a coupé (seek / pause) : normal
 
+    def do_POST(self):
+        m = re.fullmatch(r"/suivi/(films|series)/(\d+)", urlparse(self.path).path)
+        n = int(self.headers.get("Content-Length") or 0)
+        if not m or n > 1000 or int(m[2]) >= len(LIB[m[1]]):
+            return self.send_error(400)
+        nom = Path(LIB[m[1]][int(m[2])][2]).name
+        try:
+            data = json.loads(self.rfile.read(n))
+            with VERROU:
+                SUIVI[nom] = maj_suivi(SUIVI.get(nom, {}), data)
+                SUIVI_F.write_text(json.dumps(SUIVI, ensure_ascii=False), "utf-8")
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return self.send_error(400)
+        self.send_response(204)
+        self.end_headers()
+
     def log_message(self, *a):
         pass
 
@@ -455,6 +516,8 @@ def main():
 
     if CACHE.exists():
         META.update(json.loads(CACHE.read_text("utf-8")))
+    if SUIVI_F.exists():
+        SUIVI.update(json.loads(SUIVI_F.read_text("utf-8")))
     scan(dossiers)
     print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés.")
     if not a.hors_ligne:

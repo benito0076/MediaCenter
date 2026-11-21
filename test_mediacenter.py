@@ -1,5 +1,5 @@
 """python test_mediacenter.py"""
-from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode
+from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode, maj_suivi
 import os, tempfile
 
 assert nettoyer("Le.Film.2024.1080p.x264-GRP") == ("Le Film", "2024")
@@ -44,4 +44,14 @@ assert episode("Episode special", ("Lost",)) == ("Lost", "Episode special")
 tv = [{"name": "Lost", "first_air_date": "2004-09-22", "overview": "Crash…", "poster_path": "/l.jpg"}]
 assert choisir_tmdb(tv, "", "first_air_date")["titre"] == "Lost"
 assert choisir_tmdb(tv, "", "first_air_date")["annee"] == "2004"
+
+assert maj_suivi({}, {"t": 600, "d": 3000}) == {"t": 600, "d": 3000}
+assert maj_suivi({"t": 600, "d": 3000}, {"t": 2900, "d": 3000}) == {"t": 0, "d": 3000, "vu": True}  # générique
+assert maj_suivi({"t": 600, "vu": True}, {"vu": False}) == {"t": 0, "vu": False}
+for mauvais in ({"t": float("nan")}, {"t": -1}, {}):
+    try:
+        maj_suivi({}, mauvais)
+        raise AssertionError(mauvais)
+    except (ValueError, KeyError):
+        pass
 print("OK")
