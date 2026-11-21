@@ -127,9 +127,11 @@ assert mediacenter.accepter_encours(joue, {"k": "A", "t": 9, "lecture": False, "
 assert mediacenter.accepter_encours(joue, {"k": "B", "t": 0, "lecture": True, "dev": "pc", "quand": 105.0})  # l'autre lance
 assert mediacenter.accepter_encours(joue, {"k": "A", "t": 3, "lecture": False, "dev": "pc", "quand": 140.0})  # tél muet > 30 s
 assert mediacenter.accepter_encours({}, {"k": "A", "t": 3, "lecture": False, "dev": "pc", "quand": 1.0})
-assert mediacenter.valider_commande({"cmd": "jouer", "k": "A/1.mp3"}) == {"cmd": "jouer", "k": "A/1.mp3"}
-assert mediacenter.valider_commande({"cmd": "pause"}) == {"cmd": "pause", "k": ""}
-for mauvais in ({"cmd": "formater"}, {"cmd": "jouer"}, {"cmd": "jouer", "k": 5}, {}):
+assert mediacenter.valider_commande({"cmd": "jouer", "k": "A/1.mp3"}) == {"cmd": "jouer", "k": "A/1.mp3", "v": 0}
+assert mediacenter.valider_commande({"cmd": "pause"}) == {"cmd": "pause", "k": "", "v": 0}
+assert mediacenter.valider_commande({"cmd": "volume", "v": 0.35})["v"] == 0.35
+for mauvais in ({"cmd": "formater"}, {"cmd": "jouer"}, {"cmd": "jouer", "k": 5}, {}, {"cmd": "volume", "v": 3},
+                {"cmd": "volume", "v": "nan"}, {"cmd": "volume", "v": -0.1}):
     try:
         mediacenter.valider_commande(mauvais)
         raise AssertionError(mauvais)

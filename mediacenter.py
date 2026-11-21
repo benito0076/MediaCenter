@@ -21,7 +21,7 @@ ENCOURS_F = Path(__file__).with_name("mediacenter_encours.json")
 ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "dev", "quand"}
 COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
 RELEVE = {}  # id d'appareil -> heure du dernier relevé de commandes (= page ouverte, joignable)
-ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer"}
+ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer", "volume"}
 SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
 VERROU = threading.Lock()
 EXT = {
@@ -473,19 +473,20 @@ def valider_file(data):
 
 def valider_encours(data):
     """{"k": clé, "t": position, "lecture": bool, "dev": id d'appareil} envoyé par le navigateur, ou ValueError."""
-    k, t, lecture, dev = data["k"], float(data["t"]), data["lecture"], data.get("dev", "")
+    k, t, lecture, dev, vol = data["k"], float(data["t"]), data["lecture"], data.get("dev", ""), float(data.get("vol", 1))
     if not (isinstance(k, str) and len(k) < 2000 and math.isfinite(t) and 0 <= t < 1e6 and isinstance(lecture, bool)
-            and isinstance(dev, str) and len(dev) < 100):
+            and isinstance(dev, str) and len(dev) < 100 and 0 <= vol <= 1):
         raise ValueError("morceau en cours invalide")
-    return {"k": k, "t": round(t, 1), "lecture": lecture, "dev": dev, "quand": time.time()}
+    return {"k": k, "t": round(t, 1), "lecture": lecture, "dev": dev, "vol": round(vol, 2), "quand": time.time()}
 
 
 def valider_commande(data):
-    """{"cmd": ordre, "k": clé du morceau (pour « jouer »)} envoyé par la télécommande, ou ValueError."""
-    cmd, k = data["cmd"], data.get("k", "")
-    if cmd not in ORDRES or not isinstance(k, str) or len(k) >= 2000 or (cmd == "jouer" and not k):
+    """{"cmd": ordre, "k": clé du morceau (« jouer »), "v": volume 0–1 (« volume »)} de la télécommande, ou ValueError."""
+    cmd, k, v = data["cmd"], data.get("k", ""), float(data.get("v", 0))
+    if (cmd not in ORDRES or not isinstance(k, str) or len(k) >= 2000 or (cmd == "jouer" and not k)
+            or not (0 <= v <= 1)):  # NaN refusé aussi
         raise ValueError("commande invalide")
-    return {"cmd": cmd, "k": k}
+    return {"cmd": cmd, "k": k, "v": v}
 
 
 def accepter_encours(actuel, nouveau):
@@ -521,7 +522,7 @@ ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;fon
 .bt{margin:8px 6px 0 0;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
 #sv,#pv{color:#eee}
 .qn+.qa{margin-left:0}.qn,.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qn:hover,.qa:hover,.fi button:hover{color:#fff}
-#tc{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#tc .bt{font-size:18px}
+#tc{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#tc .bt{font-size:18px}#tc label{white-space:nowrap}#tcv{vertical-align:middle;width:140px;accent-color:#e50914}
 #fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
 .fi{display:flex;align-items:center;padding:6px 0;cursor:grab;border-top:1px solid #262626}.fi:hover{color:#fff}
 .fi button+button{margin-left:0}.fi.glisse{opacity:.4}.fi.cible{border-top:2px solid #e50914}.bt[aria-pressed=true]{background:#e50914;color:#fff}
@@ -540,7 +541,7 @@ const p=document.getElementById('p'),lis=[...document.querySelectorAll('li')];le
 const vid='{kind}'!=='musique';let last=0,proprio=false,geste=0;const APPAREIL=Math.random().toString(36).slice(2);  // proprio : cet appareil joue (ou a joué) le morceau en cours
 function envoi(l,data){navigator.sendBeacon('/suivi/{kind}/'+l.dataset.id,JSON.stringify(data))}
 function save(){if(!vid){if(cur>=0&&proprio)navigator.sendBeacon('/encours',  // musique : morceau en cours, commun aux appareils
-  JSON.stringify({k:lis[cur].dataset.k,t:p.currentTime||0,lecture:!p.paused,dev:APPAREIL}));return}
+  JSON.stringify({k:lis[cur].dataset.k,t:p.currentTime||0,lecture:!p.paused,dev:APPAREIL,vol:p.volume}));return}
  if(cur<0||!(p.currentTime>1))return;const l=lis[cur];envoi(l,{t:p.currentTime,d:p.duration||0});
  l.dataset.pos=p.currentTime;if(p.duration&&p.currentTime>.9*p.duration){l.classList.add('vu');l.dataset.pos=0}}
 p.ontimeupdate=()=>{if(Math.abs(p.currentTime-last)>10){last=p.currentTime;save()}};
@@ -627,16 +628,24 @@ if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagati
   // Télécommande visible si un autre appareil, page ouverte, a le morceau en cours et que celui-ci ne joue pas ici.
   distant=!!(e.k&&!e.moi&&e.joignable&&p.paused);tc.hidden=!distant;
   if(distant&&i!==undefined){document.getElementById('tct').textContent='Sur un autre appareil : '+lis[i].dataset.t+(e.lecture?' (lecture)':' (pause)');
-   tcpp.textContent=e.lecture?'⏸':'▶';tcpp.onclick=()=>commande(e.lecture?'pause':'lecture')}
+   tcpp.textContent=e.lecture?'⏸':'▶';tcpp.onclick=()=>commande(e.lecture?'pause':'lecture');
+   if(Date.now()-tcvTouche>3000)tcv.value=Math.round((e.vol??1)*100)}  // pas pendant qu'on bouge le curseur
   if(!p.paused||Date.now()-geste<15000||i===undefined)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);  // > 30 s sans nouvelles : appareil éteint
   if(i===cur&&Math.abs(p.currentTime-t)<3)return;proprio=false;
   if(i!==cur){p.addEventListener('loadedmetadata',()=>{p.currentTime=t},{once:true});play(i,false)}else p.currentTime=t}catch(e){}}
  tc.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>commande(b.dataset.c));
+ // Volume à distance : envoyé au plus toutes les 200 ms pendant qu'on fait glisser, et au relâchement.
+ const tcv=document.getElementById('tcv');let tcvTouche=0,tcvEnvoi=0;
+ const envoyerVol=()=>{tcvTouche=Date.now();if(Date.now()-tcvEnvoi>200){tcvEnvoi=Date.now();fetch('/commande',
+  {method:'POST',body:JSON.stringify({cmd:'volume',v:tcv.value/100})}).catch(()=>{})}};
+ tcv.oninput=envoyerVol;tcv.onchange=()=>{tcvEnvoi=0;envoyerVol()};
+ let volT;p.addEventListener('volumechange',()=>{clearTimeout(volT);volT=setTimeout(save,300)});  // la télécommande voit le volume
  suivreEncours();setInterval(suivreEncours,2000);
  // Appareil qui joue : exécute les ordres de la télécommande (relevés chaque seconde).
  setInterval(async()=>{if(!proprio)return;try{for(const c of await (await fetch('/commande?dev='+APPAREIL)).json()){
   if(c.cmd==='lecture')p.play().catch(()=>{});else if(c.cmd==='pause')p.pause();else if(c.cmd==='suivant')suivant();
-  else if(c.cmd==='precedent')precedent();else if(c.cmd==='jouer'&&parK.has(c.k))play(parK.get(c.k))}}catch(e){}},1000)}
+  else if(c.cmd==='precedent')precedent();else if(c.cmd==='jouer'&&parK.has(c.k))play(parK.get(c.k));
+  else if(c.cmd==='volume')p.volume=c.v}}catch(e){}},1000)}
 function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.shift();majFile();return play(n)}
  if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
  let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)}
@@ -779,7 +788,8 @@ class Handler(BaseHTTPRequestHandler):
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
         player = ('<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="pv" class="bt" title="Morceau précédent (ou début du morceau)">⏮ Précédent</button><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>'
                   '<div id="tc" hidden>🎛 <span id="tct"></span><br><button class="bt" data-c="precedent" aria-label="Précédent (à distance)">⏮</button>'
-                  '<button class="bt" id="tcpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-c="suivant" aria-label="Suivant (à distance)">⏭</button></div>'
+                  '<button class="bt" id="tcpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-c="suivant" aria-label="Suivant (à distance)">⏭</button>'
+                  ' <label>🔊 <input id="tcv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label></div>'
                   '<div id="fa" hidden><b>À suivre</b> <button id="fv" class="bt">Vider la file</button><div id="fl"></div></div>') if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
         body = PAGE
