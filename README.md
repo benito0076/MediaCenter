@@ -35,7 +35,7 @@ Un navigateur décode toujours le son lui-même : impossible d'envoyer le Dolby 
 - installe mpv (`winget install mpv`) ou VLC, puis relance le Media Center : il les trouve tout seul (sinon `--lecteur-externe "C:\chemin\mpv.exe"`, mémorisé) ;
 - bouton **🔊 Lire sur l'ampli (passthrough)** sous la vidéo, ou **🔊 Sur l'ampli** dans la télécommande du téléphone ; la lecture dans le navigateur se met en pause ;
 - côté Windows : régler la sortie son sur l'ampli (HDMI) ; avec VLC, activer si besoin la passthrough HDMI dans ses préférences audio.
-Ensuite, mpv/VLC se pilotent avec leur propre clavier/télécommande (la télécommande du Media Center ne les contrôle pas).
+**Avec mpv, la télécommande du Media Center continue de marcher** (téléphone, ou la page restée ouverte sur le PC) : bandeau « … (mpv) » avec ⏯, ⏪ 10 s / 30 s ⏩, volume, sous-titres, piste audio, épisode suivant, et toucher un autre film / épisode le lance dans mpv. VLC, lui, se pilote avec son propre clavier/télécommande.
 
 ## Sous-titres
 Les fichiers `.srt` / `.vtt` / `.ass` / `.ssa` sont détectés automatiquement : même nom que la vidéo (`Film.2020.srt`, `Film.2020.fr.srt`, `Film.2020.en.srt`) ou, si la vidéo est seule dans son dossier, tout `.srt` du dossier et d'un sous-dossier `Subs/`. Le français est activé par défaut ; change de langue ou coupe-les avec le bouton du lecteur (⋮ → Sous-titres, ou CC). Les accents des vieux `.srt` (Windows-1252) sont gérés.

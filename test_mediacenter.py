@@ -213,7 +213,8 @@ c = mediacenter.commande_externe("C:/VLC/vlc.exe", "/films/-bizarre.mkv", 60, 0)
 assert c[:4] == ["C:/VLC/vlc.exe", "--fullscreen", "--start-time=60", "--audio-track=0"] and c[-1].endswith("-bizarre.mkv"), c
 assert mediacenter.trouver_lecteur("/chemin/qui/nexiste/pas.exe") is None
 mediacenter.LIB["films"] = [("Dune", "", "/films/Dune.mkv")]
-assert mediacenter.valider_externe({"kind": "films", "id": 0, "t": 10, "piste": 1}) == ("/films/Dune.mkv", 10.0, 1)
+assert mediacenter.valider_externe({"kind": "films", "id": 0, "t": 10, "piste": 1}) == ("films", 0, "/films/Dune.mkv", 10.0, 1)
+assert mediacenter.commande_externe("/usr/bin/mpv", "/f.mkv", 0, 0, "/tmp/x.sock")[-3:] == ["--input-ipc-server=/tmp/x.sock", "--", "/f.mkv"]
 for mauvais in ({"kind": "films", "id": 5}, {"kind": "musique", "id": 0}, {"kind": "films", "id": 0, "t": -1},
                 {"kind": "films", "id": 0, "piste": "1; rm -rf"}):
     try:

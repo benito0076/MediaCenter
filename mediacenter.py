@@ -5,7 +5,7 @@ Usage :  python mediacenter.py --films "D:\\Films" --series "D:\\Series" --musiq
 Les dossiers sont mémorisés dans mediacenter.json ; ensuite `python mediacenter.py` suffit.
 Affiches et résumés : TMDB si une clé est donnée (--tmdb CLE), sinon iTunes ; gardés dans mediacenter_cache.json.
 """
-import argparse, hashlib, html, json, math, mimetypes, os, re, shutil, subprocess, sys, threading, time, webbrowser
+import argparse, hashlib, html, json, math, mimetypes, os, re, shutil, socket, subprocess, sys, tempfile, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, quote
@@ -40,6 +40,8 @@ POLICES_DIR = Path(__file__).with_name("polices_cache")  # polices extraites des
 POLICES = {}  # chemin vidéo -> [fichiers de police]
 AUDIO_DIR = Path(__file__).with_name("audio_cache")  # pistes audio converties pour le navigateur (AAC, stéréo ou 5.1)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
+MPV = {}  # mpv lancé par le Media Center : {"proc", "kind", "id", "titre"} ; piloté par la télécommande via son IPC
+MPV_IPC = r"\\.\pipe\mediacenter-mpv" if os.name == "nt" else os.path.join(tempfile.gettempdir(), "mediacenter-mpv.sock")
 CACHE_AUDIO_MAX = [5 * 1024 ** 3]  # taille max du cache audio (octets), réglable avec --cache-audio
 AUDIOS = {}  # chemin vidéo -> [{"nom", "convertir"}] (pistes audio, via ffprobe)
 EXTRACTIONS = {}  # fichier de sortie -> "en cours" | message d'erreur
@@ -283,13 +285,13 @@ def trouver_lecteur(force=None):
     return next((c for c in candidats if c and Path(c).is_file()), None)
 
 
-def commande_externe(lecteur, fichier, t, piste):
+def commande_externe(lecteur, fichier, t, piste, ipc=None):
     """Ligne de commande du lecteur externe : plein écran, à la bonne position, bonne piste audio, son envoyé
     tel quel (Dolby / DTS) à l'ampli par HDMI ou S/PDIF, qui le décode lui-même."""
     fichier = str(Path(fichier).resolve())
     if "mpv" in Path(lecteur).stem.lower():
-        return [lecteur, "--fs", f"--start={t:.0f}", f"--aid={piste + 1}",
-                "--audio-spdif=ac3,eac3,dts,dts-hd,truehd", "--", fichier]
+        return [lecteur, "--fs", f"--start={t:.0f}", f"--aid={piste + 1}", "--audio-spdif=ac3,eac3,dts,dts-hd,truehd",
+                *([f"--input-ipc-server={ipc}"] if ipc else []), "--", fichier]
     sortie = ["--mmdevice-passthrough=2"] if os.name == "nt" else ["--spdif"]  # VLC Windows : 2 = HDMI
     return [lecteur, "--fullscreen", f"--start-time={t:.0f}", f"--audio-track={piste}", *sortie, "--play-and-exit", fichier]
 
@@ -299,7 +301,86 @@ def valider_externe(data):
     if not (kind in ("films", "series") and 0 <= i < len(LIB[kind]) and math.isfinite(t) and 0 <= t < 1e6
             and piste in range(100)):
         raise ValueError("demande invalide")
-    return LIB[kind][i][2], t, piste
+    return kind, i, LIB[kind][i][2], t, piste
+
+
+def titre_lib(kind, i):
+    titre, dossier, _ = LIB[kind][i]
+    return f"{dossier} {titre}" if kind == "series" else titre
+
+
+def mpv_actif():
+    return bool(MPV.get("proc")) and MPV["proc"].poll() is None
+
+
+def mpv_ipc(commandes):
+    """Envoie des commandes JSON à mpv (--input-ipc-server) et renvoie leurs résultats, dans l'ordre (None si refusée)."""
+    lignes = "".join(json.dumps({"command": c, "request_id": k}) + "\n" for k, c in enumerate(commandes)).encode()
+    if os.name == "nt":  # tube nommé Windows
+        f = open(MPV_IPC, "r+b", buffering=0)  # ponytail: pas de délai max sur un tube Windows ; mpv répond en quelques ms
+        f.write(lignes)
+    else:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(2)
+        s.connect(MPV_IPC)
+        s.sendall(lignes)
+        f = s.makefile("rb")
+    with f:
+        reponses = {}
+        while len(reponses) < len(commandes):
+            ligne = f.readline()
+            if not ligne:
+                raise OSError("mpv a fermé la connexion")
+            m = json.loads(ligne)
+            if "request_id" in m:  # les autres lignes sont des événements de mpv
+                reponses[m["request_id"]] = m.get("data") if m.get("error") == "success" else None
+    return [reponses[k] for k in range(len(commandes))]
+
+
+def nom_piste_mpv(p):
+    return " – ".join(x for x in (LANGUES.get(p.get("lang", ""), p.get("lang", "")), p.get("title", "")) if x) or f"Piste {p.get('id')}"
+
+
+def etat_mpv():
+    """État de mpv au format de la télécommande vidéo (même bandeau sur le téléphone)."""
+    e = {"kind": MPV["kind"], "id": MPV["id"], "titre": MPV["titre"] + " (mpv)", "t": 0, "d": 0, "lecture": True, "vol": 1,
+         "page": "*", "st": [], "sti": -1, "au": [], "aui": 0, "age": 0, "moi": False, "joignable": True, "mpv": True}
+    try:
+        t, d, pause, vol, pistes = mpv_ipc([["get_property", x] for x in ("time-pos", "duration", "pause", "volume", "track-list")])
+    except (OSError, ValueError):
+        return e  # mpv démarre encore
+    subs = [p for p in pistes or [] if p.get("type") == "sub"]
+    auds = [p for p in pistes or [] if p.get("type") == "audio"]
+    e.update(t=t or 0, d=d or 0, lecture=not pause, vol=min(1, (vol if vol is not None else 100) / 100),
+             st=[nom_piste_mpv(p) for p in subs], sti=next((k for k, p in enumerate(subs) if p.get("selected")), -1),
+             au=[f"{k + 1}. {nom_piste_mpv(p)} ({p.get('codec', '?')})" for k, p in enumerate(auds)],
+             aui=next((k for k, p in enumerate(auds) if p.get("selected")), 0))
+    return e
+
+
+def commande_mpv(c):
+    """Exécute un ordre de la télécommande dans mpv."""
+    cmd, v = c["cmd"], c["v"]
+    if cmd in ("lecture", "pause"):
+        mpv_ipc([["set_property", "pause", cmd == "pause"]])
+    elif cmd == "deplacer":
+        mpv_ipc([["seek", v, "relative"]])
+    elif cmd == "volume":
+        mpv_ipc([["set_property", "volume", round(v * 100)]])
+    elif cmd in ("soustitres", "audio"):
+        typ = "sub" if cmd == "soustitres" else "audio"
+        pistes = [p for p in mpv_ipc([["get_property", "track-list"]])[0] or [] if p.get("type") == typ]
+        if v == -1 or int(v) < len(pistes):
+            mpv_ipc([["set_property", "sid" if typ == "sub" else "aid", "no" if v == -1 else pistes[int(v)]["id"]]])
+    elif cmd in ("jouer", "suivant"):
+        lib, actuel = LIB[MPV["kind"]], MPV["id"]
+        i = int(c["k"]) if cmd == "jouer" else actuel + 1
+        if not 0 <= i < len(lib) or (cmd == "suivant" and lib[i][1] != lib[actuel][1]):  # fin de la série / du film
+            return
+        # Les options du lancement (position de départ, piste audio) s'appliqueraient aussi au nouveau fichier.
+        mpv_ipc([["set_property", "options/start", "none"], ["set_property", "options/aid", "auto"],
+                 ["loadfile", str(Path(lib[i][2]).resolve())]])
+        MPV.update(id=i, titre=titre_lib(MPV["kind"], i))
 
 
 def nom_canaux(n):
@@ -826,11 +907,12 @@ if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
  const vtamp=document.getElementById('vtamp');let dernierEtat=null;
  vtamp.onclick=()=>{const e=dernierEtat;if(e)versAmpli(e.kind,e.id,e.t+(e.lecture&&e.age<30?e.age:0),e.aui||0,false)};
  async function suivreVideo(){try{const e=await (await fetch('/video?dev='+APPAREIL)).json();
-  const visible=!!(e.titre&&!e.moi&&e.joignable&&p.paused);vt.hidden=!visible;vdistant=visible&&e.page===location.search&&e.kind==='{kind}';
+  const visible=!!(e.titre&&!e.moi&&e.joignable&&p.paused);vt.hidden=!visible;vdistant=visible&&(e.page===location.search||e.page==='*')&&e.kind==='{kind}';  // * : mpv
   if(!visible)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);
   document.getElementById('vtt').textContent='Sur un autre appareil : '+e.titre+' — '+hms(Math.min(t,e.d||t))+(e.d?' / '+hms(e.d):'')+(e.lecture?'':' (pause)');
-  vtpp.textContent=e.lecture?'⏸':'▶';vtpp.onclick=()=>commande(e.lecture?'pause':'lecture','','video');
-  dernierEtat=e;vtamp.hidden=!AMPLI;
+  // État inversé tout de suite au clic : deux appuis rapides ne renvoient pas deux fois le même ordre.
+  let lect=e.lecture;vtpp.textContent=lect?'⏸':'▶';vtpp.onclick=()=>{commande(lect?'pause':'lecture','','video');lect=!lect;vtpp.textContent=lect?'⏸':'▶'};
+  dernierEtat=e;vtamp.hidden=!AMPLI||!!e.mpv;
   if(Date.now()-vtTouche>3000)vtv.value=Math.round((e.vol??1)*100);
   const st=e.st||[],cle=JSON.stringify(st);vtsl.hidden=!st.length;
   if(cle!==vtsListe){vtsListe=cle;vts.replaceChildren(...[['-1','Sans sous-titres'],...st.map((n,j)=>[String(j),n])].map(([v,n])=>{
@@ -889,7 +971,7 @@ if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagati
   // Télécommande visible si un autre appareil, page ouverte, a le morceau en cours et que celui-ci ne joue pas ici.
   distant=!!(e.k&&!e.moi&&e.joignable&&p.paused);tc.hidden=!distant;
   if(distant&&i!==undefined){document.getElementById('tct').textContent='Sur un autre appareil : '+lis[i].dataset.t+(e.lecture?' (lecture)':' (pause)');
-   tcpp.textContent=e.lecture?'⏸':'▶';tcpp.onclick=()=>commande(e.lecture?'pause':'lecture');
+   let lect=e.lecture;tcpp.textContent=lect?'⏸':'▶';tcpp.onclick=()=>{commande(lect?'pause':'lecture');lect=!lect;tcpp.textContent=lect?'⏸':'▶'};
    if(Date.now()-tcvTouche>3000)tcv.value=Math.round((e.vol??1)*100)}  // pas pendant qu'on bouge le curseur
   if(!p.paused||Date.now()-geste<15000||i===undefined)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);  // > 30 s sans nouvelles : appareil éteint
   if(i===cur&&Math.abs(p.currentTime-t)<3)return;proprio=false;
@@ -1033,6 +1115,8 @@ class Handler(BaseHTTPRequestHandler):
                 RELEVE[dev] = time.time()
                 liste = COMMANDES.pop(dev, [])
             return self.send_bytes(json.dumps(liste, ensure_ascii=False).encode(), "application/json")
+        if url.path == "/video" and mpv_actif():  # mpv joue sur le PC : la télécommande le pilote
+            return self.send_bytes(json.dumps(etat_mpv(), ensure_ascii=False).encode(), "application/json")
         if url.path in ("/encours", "/video"):
             e = etat_public(ENCOURS if url.path == "/encours" else VIDEO, parse_qs(url.query).get("dev", [""])[0])
             return self.send_bytes(json.dumps(e, ensure_ascii=False).encode(), "application/json")
@@ -1142,9 +1226,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if n > 2000:
                     raise ValueError("trop gros")
-                fichier, t, piste = valider_externe(json.loads(self.rfile.read(n)))
-                subprocess.Popen(commande_externe(LECTEUR[0], fichier, t, piste),
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                kind, i, fichier, t, piste = valider_externe(json.loads(self.rfile.read(n)))
+                est_mpv = "mpv" in Path(LECTEUR[0]).stem.lower()
+                if est_mpv and mpv_actif():
+                    MPV["proc"].terminate()  # un seul mpv à la fois
+                proc = subprocess.Popen(commande_externe(LECTEUR[0], fichier, t, piste, MPV_IPC if est_mpv else None),
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if est_mpv:
+                    MPV.update(proc=proc, kind=kind, id=i, titre=titre_lib(kind, i))
             except (ValueError, KeyError, TypeError) as e:
                 return self.send_error(400, str(e))
             except OSError as e:
@@ -1176,8 +1265,16 @@ class Handler(BaseHTTPRequestHandler):
                 c = valider_commande(json.loads(self.rfile.read(n)))
             except (ValueError, KeyError, TypeError, AttributeError):
                 return self.send_error(400)
+            pour_video = parse_qs(urlparse(self.path).query).get("pour", [""])[0] == "video"
+            if pour_video and mpv_actif():
+                try:
+                    commande_mpv(c)
+                except (OSError, ValueError, KeyError, IndexError) as e:
+                    print(f"⚠ Commande mpv refusée : {e}")
+                    return self.send_error(409)
+                self.send_response(204)
+                return self.end_headers()
             with VERROU:
-                pour_video = parse_qs(urlparse(self.path).query).get("pour", [""])[0] == "video"
                 cible = (VIDEO if pour_video else ENCOURS).get("dev")
                 if not cible or time.time() - RELEVE.get(cible, 0) > 5:
                     return self.send_error(409)  # personne ne joue (ou page fermée)
