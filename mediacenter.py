@@ -482,7 +482,10 @@ ul.grid .ck{position:absolute;top:12px;right:12px;background:#000b;border-radius
 ul:not(.grid) li{display:flex;align-items:center;gap:12px}
 ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;font-size:20px;margin:0;flex:none}
 .bt{margin:8px 6px 0 0;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
-#sv,#pv{color:#eee}.bt[aria-pressed=true]{background:#e50914;color:#fff}
+#sv,#pv{color:#eee}
+.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qa:hover,.fi button:hover{color:#fff}
+#fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
+.fi{display:flex;align-items:center;padding:6px 0;cursor:pointer;border-top:1px solid #262626}.fi:hover{color:#fff}.bt[aria-pressed=true]{background:#e50914;color:#fff}
 #pc{width:220px;height:220px;object-fit:cover;border-radius:8px;display:block;margin-bottom:12px}
 ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.show img{width:140px;border-radius:6px;flex:none}
 .ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;
@@ -546,7 +549,16 @@ function bascule(b,cle,val){b.setAttribute('aria-pressed',val);try{localStorage.
 if(al){al.setAttribute('aria-pressed',alea);majRepete();
  al.onclick=()=>{alea=!alea;bascule(al,'alea',alea);joues.clear();hist=[];if(alea&&p.paused)play(hasard())};
  rp.onclick=()=>{repete=(repete+1)%3;majRepete()}}
-function suivant(){if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
+// File d'attente : les morceaux ajoutés avec « + » passent avant la suite normale (ou aléatoire).
+let file=[];const fa=document.getElementById('fa'),fl=document.getElementById('fl');
+function majFile(){fa.hidden=!file.length;fl.replaceChildren(...file.map((i,k)=>{const d=document.createElement('div'),
+  x=document.createElement('button');d.className='fi';d.textContent=(k+1)+'. '+lis[i].dataset.t;
+  d.onclick=()=>{file.splice(k,1);majFile();play(i)};x.textContent='×';x.title=x.ariaLabel='Retirer de la file';
+  x.onclick=e=>{e.stopPropagation();file.splice(k,1);majFile()};d.append(x);return d}))}
+if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagation();file.push(+b.closest('li').dataset.id);majFile()});
+ document.getElementById('fv').onclick=()=>{file=[];majFile()}}
+function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.shift();majFile();return play(n)}
+ if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
  let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)}
 // Précédent : après 3 s, revient au début du morceau ; sinon morceau d'avant (en aléatoire : celui joué juste avant).
 function precedent(){const debut=()=>{p.currentTime=0};if(cur<0||p.currentTime>3)return debut();
@@ -576,7 +588,8 @@ def ligne_musique(i, titre, dossier, chemin, premier):
     src = f"/cover/{premier.setdefault(parent, i)}" if COVERS.get(parent) else (META.get("album:" + dossier) or {}).get("affiche", "")
     img = f'<img src="{html.escape(src)}" loading="lazy" alt="">' if src else '<div class="ph">🎵</div>'
     return (f'<li data-id="{i}" data-t="{html.escape(titre)}" data-img="{html.escape(src)}">{img}'
-            f'<span>{html.escape(titre)}<small>{html.escape(dossier)}</small></span></li>')
+            f'<span>{html.escape(titre)}<small>{html.escape(dossier)}</small></span>'
+            f'<button class="qa" title="Ajouter à la file d\'attente" aria-label="Ajouter à la file d\'attente">+</button></li>')
 
 
 def carte_serie(nom, nb):
@@ -665,7 +678,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             premier = {}
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
-        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="pv" class="bt" title="Morceau précédent (ou début du morceau)">⏮ Précédent</button><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
+        player = ('<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="pv" class="bt" title="Morceau précédent (ou début du morceau)">⏮ Précédent</button><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>'
+                  '<div id="fa" hidden><b>À suivre</b> <button id="fv" class="bt">Vider la file</button><div id="fl"></div></div>') if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes

@@ -46,6 +46,9 @@ Les pistes texte (SRT, ASS, …) apparaissent alors dans le menu sous-titres («
 ## Lecture aléatoire et répéter tout (musique)
 Bouton **⏮ Précédent** : si le morceau joue depuis plus de 3 s, il revient à son début ; sinon il passe au morceau d'avant (en aléatoire : celui joué juste avant). Bouton **⏭ Suivant** (les deux marchent aussi avec les touches ⏮ ⏭ du clavier ou du casque) : passe au morceau suivant en respectant l'aléatoire et « Répéter tout » ; en « Répéter 1 », il passe quand même au suivant, qui tourne alors en boucle. Bouton **🔀 Aléatoire** : chaque morceau est joué une fois dans un ordre au hasard, puis la lecture s'arrête. Bouton **🔁 Répéter**, à chaque clic : *Répéter tout* (à la fin de la liste, on recommence au début ; en aléatoire, nouveau tirage sans rejouer tout de suite le même morceau) → *🔂 Répéter 1* (le morceau en cours tourne en boucle) → désactivé. Les deux respectent la recherche (tape un artiste ou un album pour ne jouer que celui-ci) et restent activés au prochain lancement.
 
+### File d'attente
+Le **+** au bout de chaque morceau l'ajoute à la file **À suivre** (affichée sous les boutons). Ces morceaux passent avant la suite normale ou aléatoire, dans l'ordre d'ajout, même s'ils sont masqués par la recherche. Clic sur un morceau de la file : il joue tout de suite ; **×** le retire ; **Vider la file** efface tout. La file est perdue si la page est rechargée.
+
 ## Pochettes d'albums
 Pour chaque dossier d'album, le Media Center utilise l'image présente dans le dossier (`cover.jpg`, `folder.jpg`, `front.png`… sinon la première image trouvée). À défaut, il prend la pochette intégrée aux fichiers (MP3, FLAC, M4A). S'il n'y en a toujours pas, il cherche la pochette sur iTunes d'après le nom du dossier (`Artiste - Album` ou `Artiste/Album`), en arrière-plan, et la mémorise dans `mediacenter_cache.json`.
 
