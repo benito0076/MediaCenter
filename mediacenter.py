@@ -481,8 +481,8 @@ li{position:relative}.bar{position:absolute;left:0;bottom:0;height:3px;backgroun
 ul.grid .ck{position:absolute;top:12px;right:12px;background:#000b;border-radius:50%;padding:2px 7px}
 ul:not(.grid) li{display:flex;align-items:center;gap:12px}
 ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;font-size:20px;margin:0;flex:none}
-#rp{margin-left:6px}#al,#rp{margin-top:8px;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
-#al[aria-pressed=true],#rp[aria-pressed=true]{background:#e50914;color:#fff}
+.bt{margin:8px 6px 0 0;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
+#sv{color:#eee}.bt[aria-pressed=true]{background:#e50914;color:#fff}
 #pc{width:220px;height:220px;object-fit:cover;border-radius:8px;display:block;margin-bottom:12px}
 ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.show img{width:140px;border-radius:6px;flex:none}
 .ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;
@@ -546,8 +546,11 @@ function bascule(b,cle,val){b.setAttribute('aria-pressed',val);try{localStorage.
 if(al){al.setAttribute('aria-pressed',alea);majRepete();
  al.onclick=()=>{alea=!alea;bascule(al,'alea',alea);joues.clear();if(alea&&p.paused)play(hasard())};
  rp.onclick=()=>{repete=(repete+1)%3;majRepete()}}
-p.onended=()=>{if('{kind}'==='films')return;if(alea&&al)return play(hasard());
- let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)};
+function suivant(){if(alea&&al)return play(hasard());
+ let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)}
+p.onended=()=>{if('{kind}'!=='films')suivant()};
+if(al){document.getElementById('sv').onclick=suivant;  // marche aussi en « Répéter 1 » : on passe quand même au suivant
+ try{navigator.mediaSession.setActionHandler('nexttrack',suivant)}catch(e){}}  // touche ⏭ du clavier / casque
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
 </script></html>"""
 
@@ -656,7 +659,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             premier = {}
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
-        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="al" aria-pressed="false">🔀 Aléatoire</button><button id="rp" aria-pressed="false">🔁 Répéter</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
+        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
