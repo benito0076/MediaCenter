@@ -403,4 +403,11 @@ with tempfile.TemporaryDirectory() as dd:
 for k, v in _avant.items():
     setattr(m, k, v)
 m.PROFILS.clear(); m.SUIVI.clear()
+# Listes de lecture : noms vérifiés
+assert m.valider_nom_liste("  Fiesta ") == "Fiesta"
+for mauvais in ("", " ", "x" * 51, "<b>", None, 3):
+    try:
+        m.valider_nom_liste(mauvais); assert False
+    except ValueError:
+        pass
 print("OK")

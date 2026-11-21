@@ -186,6 +186,18 @@ if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagati
  async function chargerFile(){try{const ks=await (await fetch('/file')).json(),j=JSON.stringify(ks);
   if(j===derniere||glisse!==null)return;derniere=j;file=ks.map(k=>parK.get(k)).filter(i=>i!==undefined);majFile(false)}catch(e){}}
  chargerFile();setInterval(chargerFile,5000);
+ // Listes de lecture nommées (sur le PC, communes à tous les appareils) : la file en cours devient une liste, et inversement.
+ let listes={};const ls=document.getElementById('ls');
+ async function chargerListes(){try{listes=await (await fetch('/listes')).json();const v=ls.value;
+  ls.replaceChildren(ls.options[0],...Object.keys(listes).sort().map(n=>{const o=document.createElement('option');o.value=o.textContent=n;return o}));
+  ls.value=v in listes?v:''}catch(e){}}
+ const envoyerListe=(nom,k)=>fetch('/listes',{method:'POST',body:JSON.stringify({nom,k})}).then(chargerListes);
+ document.getElementById('lsc').onclick=()=>{if(!ls.value)return alert("Choisis d'abord une liste.");
+  file=file.concat(listes[ls.value].map(k=>parK.get(k)).filter(i=>i!==undefined));majFile();if(p.paused&&cur<0)suivant()};
+ document.getElementById('lse').onclick=()=>{if(!file.length)return alert('La file est vide.');const nom=prompt('Nom de la liste ?',ls.value);
+  if(nom&&nom.trim()){ls.value='';envoyerListe(nom.trim(),file.map(i=>lis[i].dataset.k)).then(()=>{ls.value=nom.trim()})}};
+ document.getElementById('lsx').onclick=()=>{if(ls.value&&confirm(ls.value+' ?'))envoyerListe(ls.value,null)};
+ chargerListes();
  // Morceau en cours commun : un appareil à l'arrêt suit ce que joue un autre (même morceau, même position, en pause) ;
  // appuyer sur ▶ reprend alors la lecture ici. Les navigateurs interdisent de lancer le son tout seul.
  p.addEventListener('play',()=>{proprio=true;save()});

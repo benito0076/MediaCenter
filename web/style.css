@@ -47,3 +47,4 @@ li:focus,.carte:focus,a.tab:focus,.bt:focus{outline:3px solid #fff;outline-offse
 #outils{background:#2a2410;border:1px solid #a07d1c;border-radius:8px;padding:8px 12px;margin-bottom:12px;color:#ddd}#outils div{margin:4px 0}#outils a{color:#f0c040}#outils small{color:#f0c040}
 #maj{background:#102a14;border:1px solid #2e8b3d;border-radius:8px;padding:8px 12px;margin-bottom:12px}#maj a,#maj small{color:#7fd88f}
 #diag{border-collapse:collapse;margin:8px 0}#diag td{padding:6px 10px;border-bottom:1px solid #262626;vertical-align:top}#diag td:nth-child(2){color:#aaa;white-space:nowrap}a.bt{text-decoration:none;display:inline-block}
+#listes{margin:12px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}#listes select{max-width:100%}

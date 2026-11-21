@@ -23,6 +23,8 @@ SUIVI_F = BASE / "mediacenter_suivi.json"
 FILE_F = BASE / "mediacenter_file.json"
 FILE = []  # file d'attente musique commune à tous les appareils : ["dossier/fichier", …]
 ENCOURS_F = BASE / "mediacenter_encours.json"
+LISTES_F = BASE / "mediacenter_listes.json"
+LISTES = {}  # listes de lecture musique, communes à tous les appareils : nom -> ["dossier/fichier", …]
 ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "dev", "quand"}
 COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
 RELEVE = {}  # id d'appareil -> heure du dernier relevé de commandes (= page ouverte, joignable)
@@ -93,7 +95,9 @@ ES = {
     "Morceau précédent (ou début du morceau)": "Canción anterior (o inicio de la canción)", "Morceau suivant": "Canción siguiente",
     "Précédent (à distance)": "Anterior (a distancia)", "Lecture / pause (à distance)": "Reproducir / pausa (a distancia)",
     "Suivant (à distance)": "Siguiente (a distancia)", "Volume (à distance)": "Volumen (a distancia)", "À suivre": "A continuación",
-    "Vider la file": "Vaciar la cola", "Plein écran (double-clic)": "Pantalla completa (doble clic)",
+    "Vider la file": "Vaciar la cola", "Listes de lecture": "Listas de reproducción", "Mettre dans la file": "Poner en la cola",
+    "Enregistrer la file": "Guardar la cola", "Supprimer la liste": "Borrar la lista", "Nom de la liste ?": "¿Nombre de la lista?",
+    "Choisis d'abord une liste.": "Elige primero una lista.", "La file est vide.": "La cola está vacía.", "Plein écran (double-clic)": "Pantalla completa (doble clic)",
     "Piste audio (à distance)": "Pista de audio (a distancia)", '"Piste audio"': '"Pista de audio"',
     "🔊 Lire sur l’ampli (passthrough)": "🔊 Reproducir en el amplificador (passthrough)",
     "Reculer de 10 secondes": "Retroceder 10 segundos", "Avancer de 30 secondes": "Avanzar 30 segundos",
@@ -1446,6 +1450,12 @@ def charger_etat():
             ENCOURS.update(valider_encours(json.loads(ENCOURS_F.read_text("utf-8"))), lecture=False)  # rien ne joue au démarrage
         except (ValueError, KeyError, TypeError):
             pass
+    LISTES.clear()
+    if LISTES_F.exists():
+        try:
+            LISTES.update({valider_nom_liste(n): valider_file(k) for n, k in json.loads(LISTES_F.read_text("utf-8")).items()})
+        except (ValueError, AttributeError):
+            print("⚠ mediacenter_listes.json illisible : listes ignorées")
     FILE.clear()
     if FILE_F.exists():
         try:
@@ -1483,6 +1493,13 @@ def importer_sauvegarde(donnees):
             (BASE / nom).write_bytes(contenu)
         charger_etat()
     return len(fichiers)
+
+
+def valider_nom_liste(nom):
+    nom = nom.strip() if isinstance(nom, str) else ""
+    if not 0 < len(nom) <= 50 or any(c in nom for c in "<>\"\\"):
+        raise ValueError("nom de liste invalide")
+    return nom
 
 
 def valider_file(data):
@@ -1749,6 +1766,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(json.dumps({"etat": MAJ.get("etat", "")}).encode(), "application/json")
         if url.path == "/installer-etat":
             return self.send_bytes(json.dumps(INSTALLS).encode(), "application/json")
+        if url.path == "/listes":
+            return self.send_bytes(json.dumps(LISTES, ensure_ascii=False).encode(), "application/json")
         if url.path == "/file":
             return self.send_bytes(json.dumps(FILE, ensure_ascii=False).encode(), "application/json")
         if url.path == "/commande":  # relevé par l'appareil qui joue, chaque seconde
@@ -1788,6 +1807,9 @@ class Handler(BaseHTTPRequestHandler):
                   '<div id="tc" hidden>🎛 <span id="tct"></span><br><button class="bt" data-c="precedent" aria-label="Précédent (à distance)">⏮</button>'
                   '<button class="bt" id="tcpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-c="suivant" aria-label="Suivant (à distance)">⏭</button>'
                   ' <label>🔊 <input id="tcv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label></div>'
+                  '<div id="listes"><select id="ls" aria-label="Listes de lecture"><option value="">📃 Listes de lecture…</option></select>'
+                  ' <button id="lsc" class="bt">Mettre dans la file</button><button id="lse" class="bt">Enregistrer la file</button>'
+                  '<button id="lsx" class="bt">Supprimer la liste</button></div>'
                   '<div id="fa" hidden><b>À suivre</b> <button id="fv" class="bt">Vider la file</button><div id="fl"></div></div>') if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>'
             '<label id="pal" hidden>🔈 Audio <select id="pas" aria-label="Piste audio"></select> <span id="pae"></span></label>'
@@ -2073,6 +2095,24 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
                     ENCOURS.clear()
                     ENCOURS.update(nouveau)
                     ENCOURS_F.write_text(json.dumps(ENCOURS, ensure_ascii=False), "utf-8")
+            except (ValueError, KeyError, TypeError):
+                return self.send_error(400)
+            self.send_response(204)
+            return self.end_headers()
+        if urlparse(self.path).path == "/listes":  # {"nom", "k": [...]} enregistre, {"nom", "k": null} supprime
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                if n > 2_000_000:
+                    raise ValueError("trop gros")
+                data = json.loads(self.rfile.read(n))
+                nom = valider_nom_liste(data["nom"])
+                k = None if data["k"] is None else valider_file(data["k"])
+                with VERROU:
+                    if k is None:
+                        LISTES.pop(nom, None)
+                    else:
+                        LISTES[nom] = k
+                    LISTES_F.write_text(json.dumps(LISTES, ensure_ascii=False), "utf-8")
             except (ValueError, KeyError, TypeError):
                 return self.send_error(400)
             self.send_response(204)
