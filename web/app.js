@@ -39,6 +39,7 @@ function play(i,auto=true){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.
    if(s.ass)t.dataset.ass='/ass/{kind}/'+l.dataset.id+'/'+n;p.appendChild(t)});setTimeout(majAss,300)});
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
+document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'POST'});location.reload()};
 document.getElementById('rs').onclick=async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='⏳';
  try{const r=await (await fetch('/rescan',{method:'POST'})).json();if(r.nouveaux)location.reload();else{b.textContent='✓';setTimeout(()=>{b.textContent='🔄';b.disabled=false},1500)}}
  catch(x){b.textContent='🔄';b.disabled=false}};

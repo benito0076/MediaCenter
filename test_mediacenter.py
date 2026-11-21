@@ -311,4 +311,24 @@ except OSError:
     pass
 finally:
     s1.server_close()
+# Langue : seule l'interface est traduite ; détection de l'espagnol par le système
+m = mediacenter
+if os.name != "nt":
+    ancien = dict(os.environ)
+    try:
+        for v in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
+            os.environ.pop(v, None)
+        os.environ["LANG"] = "es_ES.UTF-8"
+        assert m.langue_systeme() == "es"
+        os.environ["LANG"] = "fr_FR.UTF-8"
+        assert m.langue_systeme() == "fr"
+    finally:
+        os.environ.clear()
+        os.environ.update(ancien)
+m.LANGUE[0] = "es"
+assert m.tr("Vu / pas vu") == "Visto / no visto" and m.tr("titre inconnu") == "titre inconnu"
+assert "Películas (" in m.gabarit() and "🌐 Français" in m.gabarit() and 'lang="es"' in m.gabarit()
+assert m.nom_piste({"tags": {"language": "fre"}}) == "Francés" and m.nom_piste({}, "Piste") == "Pista"
+m.LANGUE[0] = "fr"
+assert m.tr("Vu / pas vu") == "Vu / pas vu" and "Films (" in m.gabarit()
 print("OK")

@@ -65,7 +65,76 @@ FFMPEG, FFPROBE = shutil.which("ffmpeg"), shutil.which("ffprobe")  # optionnels 
 PISTES = {}  # chemin vidéo -> [(nom, n° de piste de sous-titres)] (intégrées, format texte)
 VTT = {}  # (chemin vidéo, n° de piste) -> WebVTT extrait  # ponytail: en mémoire, vidé au redémarrage
 TEXTE = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}  # PGS/VobSub = images : non convertibles
-LANGUES = {"fre": "Français", "fra": "Français", "fr": "Français", "eng": "Anglais", "en": "Anglais",
+# --- Langue de l'interface (français d'origine, espagnol) : seuls les textes de l'interface sont traduits,
+# jamais les titres de la bibliothèque.
+LANGUE = ["fr"]
+ES = {
+    'lang="fr"': 'lang="es"', "Accueil": "Inicio", "Films (": "Películas (", "Séries (": "Series (", "Musique (": "Música (",
+    "Rechercher…": "Buscar…", "Chercher les nouveaux fichiers": "Buscar archivos nuevos",
+    "Actualiser la bibliothèque": "Actualizar la biblioteca", "Code d'accès": "Código de acceso", "Entrer": "Entrar",
+    "Code incorrect.": "Código incorrecto.", "Trop d'essais : réessaie dans 5 minutes.": "Demasiados intentos: vuelve a probar en 5 minutos.",
+    "préparation de la piste… (jusqu’à une minute la première fois)": "preparando la pista… (hasta un minuto la primera vez)",
+    "erreur réseau": "error de red", " – convertie": " – convertida",
+    "Supprimer les pistes audio converties ? Elles seront reconverties si tu les rechoisis.":
+        "¿Borrar las pistas de audio convertidas? Se volverán a convertir si las eliges de nuevo.",
+    " Mo'": " MB'", " (piste en cours d’écoute gardée)": " (se conserva la pista que se está escuchando)",
+    "Impossible d’ouvrir le lecteur ": "No se pudo abrir el reproductor ", " sur le PC.": " en el PC.",
+    "Ouvre ce film dans ": "Abre esta película en ", " sur le PC, à la même position": " en el PC, en la misma posición",
+    "Sur un autre appareil : ": "En otro dispositivo: ", " (pause)": " (pausa)", " (lecture)": " (reproduciendo)",
+    "Sans sous-titres": "Sin subtítulos", "🔁 Répéter tout": "🔁 Repetir todo", "🔂 Répéter 1": "🔂 Repetir 1",
+    "🔁 Répéter": "🔁 Repetir", "'Monter'": "'Subir'", "'Descendre'": "'Bajar'", "Retirer de la file": "Quitar de la cola",
+    "/fr|vf/i": "/\\b(es|spa|esp)\\b|español|castellano|latino|spanish/i",  # sous-titres choisis par défaut
+    "⏮ Précédent": "⏮ Anterior", "⏭ Suivant": "⏭ Siguiente", "🔀 Aléatoire": "🔀 Aleatorio",
+    "Morceau précédent (ou début du morceau)": "Canción anterior (o inicio de la canción)", "Morceau suivant": "Canción siguiente",
+    "Précédent (à distance)": "Anterior (a distancia)", "Lecture / pause (à distance)": "Reproducir / pausa (a distancia)",
+    "Suivant (à distance)": "Siguiente (a distancia)", "Volume (à distance)": "Volumen (a distancia)", "À suivre": "A continuación",
+    "Vider la file": "Vaciar la cola", "Plein écran (double-clic)": "Pantalla completa (doble clic)",
+    "Piste audio (à distance)": "Pista de audio (a distancia)", '"Piste audio"': '"Pista de audio"',
+    "🔊 Lire sur l’ampli (passthrough)": "🔊 Reproducir en el amplificador (passthrough)",
+    "Reculer de 10 secondes": "Retroceder 10 segundos", "Avancer de 30 secondes": "Avanzar 30 segundos",
+    "⏭ Épisode suivant": "⏭ Episodio siguiente", "Épisode suivant (à distance)": "Episodio siguiente (a distancia)",
+    "Sous-titres (à distance)": "Subtítulos (a distancia)", "🔊 Sur l’ampli": "🔊 En el amplificador",
+    "Pistes audio converties : ": "Pistas de audio convertidas: ", "🗑 Vider le cache audio": "🗑 Vaciar la caché de audio",
+    "Lire juste après": "Reproducir a continuación", "Ajouter à la file d'attente": "Añadir a la cola", "Vu / pas vu": "Visto / no visto",
+    "épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus": "vistos",
+    "▶ Reprendre": "▶ Seguir viendo", "⏭ Épisodes suivants": "⏭ Próximos episodios", "🆕 Ajoutés récemment": "🆕 Añadidos recientemente",
+    "Rien pour l’instant : lance un film ou une série, ils apparaîtront ici.":
+        "Nada por ahora: pon una película o una serie y aparecerán aquí.",
+    "Français": "Francés", "Anglais": "Inglés", "Espagnol": "Español", "Allemand": "Alemán", "Italien": "Italiano",
+    "Portugais": "Portugués", "Intégrés": "Integrados", "Piste": "Pista", "Sous-titres": "Subtítulos",
+    "Ouvrir le Media Center": "Abrir Media Center", "Démarrer avec Windows": "Iniciar con Windows", "Quitter": "Salir",
+    "Premier lancement : choisis tes dossiers de films, de séries et de musique.\n(Annuler pour passer un dossier.)":
+        "Primer inicio: elige tus carpetas de películas, series y música.\n(Cancelar para omitir una carpeta.)",
+    "Dossier de films": "Carpeta de películas", "Dossier de séries TV": "Carpeta de series", "Dossier de musique": "Carpeta de música",
+    "Langue : Español": "Idioma: Français", "🌐 Español": "🌐 Français",
+}
+_MOTIF_ES = re.compile("|".join(re.escape(k) for k in sorted(ES, key=len, reverse=True)))
+
+
+def tr(texte):
+    """Texte de l'interface dans la langue choisie."""
+    return ES.get(texte, texte) if LANGUE[0] == "es" else texte
+
+
+def traduire(texte):
+    """Traduit un gabarit de l'interface (pages web, boutons) en une passe ; jamais appliqué aux titres de la bibliothèque."""
+    return _MOTIF_ES.sub(lambda m: ES[m.group()], texte) if LANGUE[0] == "es" else texte
+
+
+def langue_systeme():
+    """Langue de Windows (ou du système) : espagnol si c'est de l'espagnol, sinon français."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            return "es" if ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x0A else "fr"  # 0x0A = espagnol
+        except (AttributeError, OSError):
+            pass
+    import locale
+    noms = [os.environ.get(v, "") for v in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG")] + [locale.getlocale()[0] or ""]
+    return "es" if any(n.lower().startswith(("es", "spanish")) for n in noms) else "fr"
+
+
+LANGUES = {"fre": "Français", "fra": "Français", "fr": "Français", "eng": "Anglais", "en": "Anglais", "es": "Espagnol",
            "spa": "Espagnol", "ger": "Allemand", "deu": "Allemand", "ita": "Italien", "por": "Portugais"}
 
 JUNK = re.compile(r"\b(2160p|1080p|720p|480p|4k|uhd|hdr|bluray|bdrip|brrip|webrip|web ?dl|web|hdtv|dvdrip|hdrip|"
@@ -205,7 +274,7 @@ def nom_sous_titre(fichier, video):
     stem = Path(fichier).stem
     if stem.lower().startswith(Path(video).stem.lower()):
         stem = stem[len(Path(video).stem):]
-    return re.sub(r"[._\-]+", " ", stem).strip() or "Sous-titres"
+    return re.sub(r"[._\-]+", " ", stem).strip() or tr("Sous-titres")
 
 
 def lire_texte(chemin):
@@ -263,11 +332,11 @@ def vers_vtt(texte):
     return "WEBVTT\n\n" + texte
 
 
-def nom_piste(flux):
+def nom_piste(flux, defaut="Intégrés"):
     """Flux ffprobe -> 'Français – Forced'"""
     tags = {k.lower(): v for k, v in flux.get("tags", {}).items()}
     lang = tags.get("language", "")
-    return " – ".join(x for x in (LANGUES.get(lang, "" if lang == "und" else lang), tags.get("title", "")) if x) or "Intégrés"
+    return " – ".join(x for x in (tr(LANGUES.get(lang, "" if lang == "und" else lang)), tags.get("title", "")) if x) or tr(defaut)
 
 
 def pistes_audio(chemin):
@@ -282,7 +351,7 @@ def pistes_audio(chemin):
             flux = json.loads(out or b"{}").get("streams", [])
         except (OSError, ValueError, subprocess.TimeoutExpired):
             flux = []
-        AUDIOS[chemin] = [{"nom": f"{k + 1}. " + nom_piste(f).replace("Intégrés", "Piste")
+        AUDIOS[chemin] = [{"nom": f"{k + 1}. " + nom_piste(f, "Piste")
                                   + f" ({f.get('codec_name', '?')}{', ' + nom_canaux(f.get('channels', 2)) if f.get('channels', 2) > 2 else ''})",
                            "convertir": f.get("codec_name") in NON_LU, "canaux": f.get("channels", 2)} for k, f in enumerate(flux)]
     return AUDIOS[chemin]
@@ -375,9 +444,9 @@ def accueil():
         recents.append(carte(k, i))
         if len(recents) == 20:
             break
-    return [("▶ Reprendre", [carte(k, i) for _, k, i in reprendre[:20]]),
-            ("⏭ Épisodes suivants", [carte("series", i) for _, i in sorted(suivants, reverse=True)[:20]]),
-            ("🆕 Ajoutés récemment", recents)]
+    return [(tr("▶ Reprendre"), [carte(k, i) for _t, k, i in reprendre[:20]]),
+            (tr("⏭ Épisodes suivants"), [carte("series", i) for _t, i in sorted(suivants, reverse=True)[:20]]),
+            (tr("🆕 Ajoutés récemment"), recents)]
 
 
 def html_accueil():
@@ -388,7 +457,7 @@ def html_accueil():
             + f'<span>{html.escape(t)}</span><small>{html.escape(st)}</small>'
             + (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + "</a>" for l, a, t, st, pct in cartes) + "</div>"
         for titre, cartes in accueil() if cartes)
-    return rangs or '<p class="vide">Rien pour l’instant : lance un film ou une série, ils apparaîtront ici.</p>'
+    return rangs or '<p class="vide">' + tr("Rien pour l’instant : lance un film ou une série, ils apparaîtront ici.") + '</p>'
 
 
 def commande_demarrage():
@@ -438,12 +507,12 @@ def icone_barre(url):
         if not isinstance(e, ImportError):
             print(f"⚠ Icône près de l'horloge indisponible : {e}")
         return False
-    menu = [pystray.MenuItem("Ouvrir le Media Center", lambda: webbrowser.open(url), default=True),
-            pystray.MenuItem("Actualiser la bibliothèque", lambda: print(f"{RESCAN[0]()} nouveau(x) fichier(s)."))]
+    menu = [pystray.MenuItem(tr("Ouvrir le Media Center"), lambda: webbrowser.open(url), default=True),
+            pystray.MenuItem(tr("Actualiser la bibliothèque"), lambda: print(f"{RESCAN[0]()} nouveau(x) fichier(s)."))]
     if os.name == "nt":
-        menu.append(pystray.MenuItem("Démarrer avec Windows", lambda: demarrage_auto(not demarrage_auto()),
+        menu.append(pystray.MenuItem(tr("Démarrer avec Windows"), lambda: demarrage_auto(not demarrage_auto()),
                                      checked=lambda item: demarrage_auto()))
-    menu.append(pystray.MenuItem("Quitter", lambda icon: (icon.stop(), os._exit(0))))  # arrête aussi le serveur
+    menu.append(pystray.MenuItem(tr("Quitter"), lambda icon: (icon.stop(), os._exit(0))))  # arrête aussi le serveur
     try:
         pystray.Icon("MediaCenter", img, "Media Center", pystray.Menu(*menu)).run()
     except Exception as e:  # pas de bureau (session de service…) : le serveur continue sans icône
@@ -458,10 +527,10 @@ def demander_dossiers_fenetre(cfg, dossiers):
     from tkinter import filedialog, messagebox
     racine = tkinter.Tk()
     racine.withdraw()
-    messagebox.showinfo("Media Center", "Premier lancement : choisis tes dossiers de films, de séries et de musique.\n"
-                                        "(Annuler pour passer un dossier.)")
+    messagebox.showinfo("Media Center", tr("Premier lancement : choisis tes dossiers de films, de séries et de musique.\n"
+                                          "(Annuler pour passer un dossier.)"))
     for k, nom in (("films", "films"), ("series", "séries TV"), ("musique", "musique")):
-        d = filedialog.askdirectory(title=f"Dossier de {nom}", mustexist=True)
+        d = filedialog.askdirectory(title=tr(f"Dossier de {nom}"), mustexist=True)
         if d:
             cfg[k] = dossiers[k] = [d]
     racine.destroy()
@@ -481,6 +550,16 @@ def message_erreur(texte):
         except Exception:  # pas d'affichage : le message reste dans mediacenter.log
             pass
     print(texte)
+
+
+GABARITS = {}
+
+
+def gabarit():
+    """Page de l'interface dans la langue choisie (traduite une seule fois)."""
+    if LANGUE[0] not in GABARITS:
+        GABARITS[LANGUE[0]] = traduire(PAGE).replace("{autre_langue}", "🌐 Français" if LANGUE[0] == "es" else "🌐 Español")
+    return GABARITS[LANGUE[0]]
 
 
 class Serveur(ThreadingHTTPServer):
@@ -1038,7 +1117,7 @@ def suivi(chemin):
     e = SUIVI.get(Path(chemin).name, {})
     pct = min(100, int(100 * e["t"] / e["d"])) if e.get("t") and e.get("d") else 0
     attrs = f' data-pos="{e.get("t", 0)}"' + (' class="vu"' if e.get("vu") else "")
-    return attrs, (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + '<b class="ck" title="Vu / pas vu">✓</b>'
+    return attrs, (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + f'<b class="ck" title="{tr("Vu / pas vu")}">✓</b>'
 
 
 def valider_file(data):
@@ -1124,17 +1203,20 @@ def ligne_musique(i, titre, dossier, chemin, premier):
     cle = html.escape(dossier + "/" + Path(chemin).name)  # identifiant stable (les numéros changent au rescan)
     return (f'<li data-id="{i}" data-k="{cle}" data-t="{html.escape(titre)}" data-img="{html.escape(src)}">{img}'
             f'<span>{html.escape(titre)}<small>{html.escape(dossier)}</small></span>'
-            f'<button class="qn" title="Lire juste après" aria-label="Lire juste après">↱</button>'
-            f'<button class="qa" title="Ajouter à la file d\'attente" aria-label="Ajouter à la file d\'attente">+</button></li>')
+            f'<button class="qn" title="{tr("Lire juste après")}" aria-label="{tr("Lire juste après")}">↱</button>'
+            f'<button class="qa" title="{tr(QA)}" aria-label="{tr(QA)}">+</button></li>')
+
+
+QA = "Ajouter à la file d'attente"
 
 
 def carte_serie(nom, nb):
     m = META.get("serie:" + nom) or {}
     vus = sum(1 for _, d, c in LIB["series"] if d == nom and SUIVI.get(Path(c).name, {}).get("vu"))
-    vus_txt = (f" · {vus} vu" + ("s" if vus > 1 else "")) if vus else ""
+    vus_txt = f" · {vus} {tr('vus' if vus > 1 else 'vu')}" if vus else ""
     img = f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche") else '<div class="ph">📺</div>'
     return (f'<li data-href="/?k=series&amp;s={html.escape(quote(nom))}">{img}{html.escape(nom)}'
-            f'<small>{nb} épisode{"s" if nb > 1 else ""}{vus_txt}</small></li>')
+            f'<small>{nb} {tr("épisodes" if nb > 1 else "épisode")}{vus_txt}</small></li>')
 
 
 def page_serie(nom):
@@ -1156,7 +1238,7 @@ class Handler(BaseHTTPRequestHandler):
         return "mc" in c and hmac.compare_digest(c["mc"].value, ACCES["jeton"])
 
     def page_pin(self, erreur="", code=200):
-        corps = PAGE_PIN.replace("{erreur}", erreur).encode()
+        corps = traduire(PAGE_PIN).replace("{erreur}", tr(erreur)).encode()
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(corps)))
@@ -1294,9 +1376,10 @@ class Handler(BaseHTTPRequestHandler):
             ' <label id="vtal" hidden>🔈 <select id="vta" aria-label="Piste audio (à distance)"></select></label>'
             ' <button class="bt" id="vtamp" hidden>🔊 Sur l’ampli</button></div>')
         taille = taille_cache_audio() if kind != "musique" else 0
-        pied = (f'<p id="pied">Pistes audio converties : <span id="ct">{taille / 1e6:.0f} Mo</span> '
-                f'<button class="bt" id="cv">🗑 Vider le cache audio</button></p>' if taille else "")
-        body = PAGE
+        pied = traduire(f'<p id="pied">Pistes audio converties : <span id="ct">{taille / 1e6:.0f} Mo</span> '
+                        f'<button class="bt" id="cv">🗑 Vider le cache audio</button></p>' if taille else "")
+        player = traduire(player)
+        body = gabarit()
         body = body.replace("{accueil}", "")
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
@@ -1311,7 +1394,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def page_accueil(self):
-        body = PAGE[:PAGE.index("<main>")].replace("{accueil}", "on")
+        body = gabarit()[:gabarit().index("<main>")].replace("{accueil}", "on")
         for k in LIB:
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
             body = body.replace("{" + k + "}", "").replace("{n" + k + "}", str(n))
@@ -1319,6 +1402,7 @@ class Handler(BaseHTTPRequestHandler):
 const cartes=[...document.querySelectorAll('.carte')];
 q.oninput=()=>{const s=q.value.toLowerCase();cartes.forEach(c=>c.hidden=!c.textContent.toLowerCase().includes(s))};
 document.getElementById('rs').onclick=async()=>{await fetch('/rescan',{method:'POST'});location.reload()};
+document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'POST'});location.reload()};
 </script></html>""").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1442,6 +1526,15 @@ document.getElementById('rs').onclick=async()=>{await fetch('/rescan',{method:'P
                 return self.send_error(500)
             self.send_response(204)
             return self.end_headers()
+        if urlparse(self.path).path == "/langue":  # bouton 🌐 : bascule français / espagnol (mémorisé)
+            LANGUE[0] = "fr" if LANGUE[0] == "es" else "es"
+            cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+            cfg["langue"] = LANGUE[0]
+            CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+            AUDIOS.clear()  # noms des pistes recalculés dans la nouvelle langue
+            PISTES.clear()
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/rescan":
             try:
                 n = RESCAN[0]()
@@ -1552,6 +1645,7 @@ def main():
                     help="mpv.exe ou vlc.exe pour la passthrough vers l'ampli (sinon trouvé tout seul) ; mémorisé")
     ap.add_argument("--cache-audio", type=float, metavar="GO",
                     help="taille max du cache des pistes audio converties, en Go (défaut 5) ; mémorisée")
+    ap.add_argument("--langue", choices=("es", "fr"), help="langue de l'interface (par défaut celle de Windows) ; mémorisée")
     ap.add_argument("--pin", metavar="CODE", help="code demandé aux autres appareils (TV, téléphone) ; « aucun » pour l'enlever ; mémorisé")
     ap.add_argument("--hors-ligne", action="store_true", help="ne pas chercher les affiches sur internet")
     a = ap.parse_args()
@@ -1563,10 +1657,11 @@ def main():
         print(f"Démarrage avec Windows : {a.demarrage_auto}.")
     cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
     nouveau = {"films": a.films, "series": a.series, "musique": a.musique, "tmdb": a.tmdb, "cache_audio": a.cache_audio,
-               "lecteur_externe": a.lecteur_externe, "pin": a.pin}
+               "lecteur_externe": a.lecteur_externe, "pin": a.pin, "langue": a.langue}
     if any(nouveau.values()):
         cfg.update({k: v for k, v in nouveau.items() if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+    LANGUE[0] = cfg.get("langue") or langue_systeme()
     dossiers = {k: cfg.get(k, []) for k in LIB}
     if not any(dossiers.values()) and sys.stdin and sys.stdin.isatty():  # 1er lancement (double-clic sur le .exe)
         print("Premier lancement : indique tes dossiers (copier-coller le chemin, ou Entrée pour passer).")
