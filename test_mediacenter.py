@@ -208,7 +208,8 @@ assert mediacenter.options_conversion(8) == ["-ac", "6", "-b:a", "384k"]  # 7.1 
 assert mediacenter.options_conversion(3) == ["-ac", "3", "-b:a", "384k"]
 assert (mediacenter.nom_canaux(6), mediacenter.nom_canaux(8), mediacenter.nom_canaux(10)) == ("5.1", "7.1", "10 canaux")
 c = mediacenter.commande_externe("/usr/bin/mpv", "/films/Dune.mkv", 1234.6, 1)
-assert c == ["/usr/bin/mpv", "--fs", "--start=1235", "--aid=2", "--audio-spdif=ac3,eac3,dts,dts-hd,truehd", "--", "/films/Dune.mkv"], c
+assert c == ["/usr/bin/mpv", "--fs", "--start=1235", "--aid=2", "--audio-spdif=ac3,eac3,dts,dts-hd,truehd", "--",
+             str(Path("/films/Dune.mkv").resolve())], c  # chemin absolu à la façon du système (D:\\films\\… sous Windows)
 c = mediacenter.commande_externe("C:/VLC/vlc.exe", "/films/-bizarre.mkv", 60, 0)
 assert c[:4] == ["C:/VLC/vlc.exe", "--fullscreen", "--start-time=60", "--audio-track=0"] and c[-1].endswith("-bizarre.mkv"), c
 assert mediacenter.trouver_lecteur("/chemin/qui/nexiste/pas.exe") is None

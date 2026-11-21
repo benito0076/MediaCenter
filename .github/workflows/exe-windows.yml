@@ -14,7 +14,6 @@ jobs:
           python-version: "3.12"
       - name: Tests (sous Windows)
         run: python test_mediacenter.py
-        continue-on-error: true
       - name: Fabrication du .exe
         run: |
           pip install pyinstaller==6.11.1
