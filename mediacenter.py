@@ -3,13 +3,14 @@
 
 Usage :  python mediacenter.py --films "D:\\Films" --musique "D:\\Musique"
 Les dossiers sont mémorisés dans mediacenter.json ; ensuite `python mediacenter.py` suffit.
-Affiches et résumés : récupérés sur iTunes (gratuit, sans clé) et gardés dans mediacenter_cache.json.
+Affiches et résumés : TMDB si une clé est donnée (--tmdb CLE), sinon iTunes ; gardés dans mediacenter_cache.json.
 """
 import argparse, html, json, mimetypes, os, re, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode
-from urllib.request import urlopen
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 CONFIG = Path(__file__).with_name("mediacenter.json")
 CACHE = Path(__file__).with_name("mediacenter_cache.json")
@@ -48,33 +49,65 @@ def scan(dossiers):
         LIB[kind] = sorted(items, key=lambda i: (i[1].lower(), i[0].lower()))
 
 
-def choisir(resultats, annee):
+def meilleur(resultats, annee, champ_date):
+    return next((x for x in resultats if annee and (x.get(champ_date) or "").startswith(annee)), resultats[0])
+
+
+def choisir(resultats, annee):  # format iTunes
     if not resultats:
         return {}
-    r = next((x for x in resultats if annee and x.get("releaseDate", "").startswith(annee)), resultats[0])
+    r = meilleur(resultats, annee, "releaseDate")
     return {"titre": r.get("trackName", ""), "annee": r.get("releaseDate", "")[:4],
             "resume": r.get("longDescription") or r.get("shortDescription", ""),
             "affiche": r.get("artworkUrl100", "").replace("100x100", "600x600")}
 
 
-def chercher(titre, annee):
+def choisir_tmdb(resultats, annee):
+    if not resultats:
+        return {}
+    r = meilleur(resultats, annee, "release_date")
+    return {"titre": r.get("title", ""), "annee": (r.get("release_date") or "")[:4], "resume": r.get("overview", ""),
+            "affiche": "https://image.tmdb.org/t/p/w500" + r["poster_path"] if r.get("poster_path") else "",
+            "source": "tmdb"}
+
+
+def chercher_itunes(titre, annee):
     q = urlencode({"term": titre, "media": "movie", "entity": "movie", "country": "fr", "lang": "fr_fr", "limit": 10})
     with urlopen("https://itunes.apple.com/search?" + q, timeout=10) as r:
         return choisir(json.load(r).get("results", []), annee)
 
 
-def enrichir():
-    manquants = [Path(p) for _, _, p in LIB["films"] if Path(p).name not in META]
+def chercher_tmdb(titre, annee, cle):
+    q, h = {"query": titre, "language": "fr-FR"}, {"Accept": "application/json"}
+    if cle.startswith("eyJ"):  # « jeton d'accès en lecture » (long) plutôt que « clé d'API » (courte)
+        h["Authorization"] = "Bearer " + cle
+    else:
+        q["api_key"] = cle
+    with urlopen(Request("https://api.themoviedb.org/3/search/movie?" + urlencode(q), headers=h), timeout=10) as r:
+        return choisir_tmdb(json.load(r).get("results", []), annee)
+
+
+def enrichir(cle=None):
+    films = [Path(p) for _, _, p in LIB["films"]]
+    # Avec TMDB, on repasse aussi sur les films trouvés (ou pas) par iTunes.
+    manquants = [p for p in films if p.name not in META or (cle and META[p.name].get("source") != "tmdb")]
     if manquants:
-        print(f"Recherche des affiches pour {len(manquants)} films (en arrière-plan)…")
+        print(f"Recherche des affiches ({'TMDB' if cle else 'iTunes'}) pour {len(manquants)} films (en arrière-plan)…")
     for p in manquants:
         try:
-            META[p.name] = chercher(*nettoyer(p.stem))
+            info = chercher_tmdb(*nettoyer(p.stem), cle) if cle else chercher_itunes(*nettoyer(p.stem))
+        except HTTPError as e:
+            if e.code == 401:
+                return print("⚠ Clé TMDB refusée : vérifie-la (python mediacenter.py --tmdb CLE)")
+            print(f"⚠ Affiche non récupérée pour {p.name} : {e}")
+            continue
         except (OSError, ValueError) as e:  # pas d'internet : on réessaiera au prochain lancement
             print(f"⚠ Affiche non récupérée pour {p.name} : {e}")
             continue
+        # TMDB n'a rien trouvé : on garde ce qu'iTunes avait, marqué comme déjà tenté.
+        META[p.name] = info or ({**META.get(p.name, {}), "source": "tmdb"} if cle else {})
         CACHE.write_text(json.dumps(META, ensure_ascii=False), "utf-8")
-        time.sleep(3)  # ponytail: iTunes limite à ~20 requêtes/min ; 1re fois lente si grosse collection
+        time.sleep(0.1 if cle else 3)  # ponytail: iTunes limite à ~20 requêtes/min ; 1re fois lente si grosse collection
 
 
 PAGE = """<!doctype html><html lang="fr"><meta charset="utf-8">
@@ -196,12 +229,13 @@ def main():
     ap.add_argument("--musique", action="append", help="dossier de musique (répétable)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--reseau", action="store_true", help="accessible depuis la TV/téléphone du réseau local")
+    ap.add_argument("--tmdb", metavar="CLE", help="clé TMDB (themoviedb.org) pour de meilleures affiches ; mémorisée")
     ap.add_argument("--hors-ligne", action="store_true", help="ne pas chercher les affiches sur internet")
     a = ap.parse_args()
 
     cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {"films": [], "musique": []}
-    if a.films or a.musique:
-        cfg = {"films": a.films or cfg["films"], "musique": a.musique or cfg["musique"]}
+    if a.films or a.musique or a.tmdb:
+        cfg.update({k: v for k, v in (("films", a.films), ("musique", a.musique), ("tmdb", a.tmdb)) if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
     if not (cfg["films"] or cfg["musique"]):
         sys.exit('Indique tes dossiers : python mediacenter.py --films "D:\\Films" --musique "D:\\Musique"')
@@ -211,10 +245,10 @@ def main():
 
     if CACHE.exists():
         META.update(json.loads(CACHE.read_text("utf-8")))
-    scan(cfg)
+    scan({k: cfg[k] for k in LIB})
     print(f"{len(LIB['films'])} films, {len(LIB['musique'])} morceaux trouvés.")
     if not a.hors_ligne:
-        threading.Thread(target=enrichir, daemon=True).start()
+        threading.Thread(target=enrichir, args=(cfg.get("tmdb"),), daemon=True).start()
     host = "0.0.0.0" if a.reseau else "127.0.0.1"
     url = f"http://localhost:{a.port}/"
     print(f"Ouvre {url}  (Ctrl+C pour quitter, relance pour rescanner)")
