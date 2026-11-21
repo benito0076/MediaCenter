@@ -1183,7 +1183,8 @@ def accepter_encours(actuel, nouveau):
 
 # Interface : web/page.html (structure), web/style.css, web/app.js ; les {repères} sont remplis à chaque page.
 PAGE = ((WEB_DIR / "page.html").read_text("utf-8").replace("{css}", (WEB_DIR / "style.css").read_text("utf-8"))
-        .replace("{js}", (WEB_DIR / "app.js").read_text("utf-8")))
+        .replace("{js}", (WEB_DIR / "app.js").read_text("utf-8") + (WEB_DIR / "nav.js").read_text("utf-8")))
+NAV_JS = (WEB_DIR / "nav.js").read_text("utf-8")  # aussi sur l'accueil
 
 
 def carte_film(i, titre, chemin):
@@ -1403,7 +1404,7 @@ const cartes=[...document.querySelectorAll('.carte')];
 q.oninput=()=>{const s=q.value.toLowerCase();cartes.forEach(c=>c.hidden=!c.textContent.toLowerCase().includes(s))};
 document.getElementById('rs').onclick=async()=>{await fetch('/rescan',{method:'POST'});location.reload()};
 document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'POST'});location.reload()};
-</script></html>""").encode()
+""" + NAV_JS + """</script></html>""").encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
