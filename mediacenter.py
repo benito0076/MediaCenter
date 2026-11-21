@@ -483,7 +483,7 @@ ul:not(.grid) li{display:flex;align-items:center;gap:12px}
 ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;font-size:20px;margin:0;flex:none}
 .bt{margin:8px 6px 0 0;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
 #sv,#pv{color:#eee}
-.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qa:hover,.fi button:hover{color:#fff}
+.qn+.qa{margin-left:0}.qn,.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qn:hover,.qa:hover,.fi button:hover{color:#fff}
 #fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
 .fi{display:flex;align-items:center;padding:6px 0;cursor:grab;border-top:1px solid #262626}.fi:hover{color:#fff}
 .fi button+button{margin-left:0}.fi.glisse{opacity:.4}.fi.cible{border-top:2px solid #e50914}.bt[aria-pressed=true]{background:#e50914;color:#fff}
@@ -566,6 +566,7 @@ function majFile(){fa.hidden=!file.length;fl.replaceChildren(...file.map((i,k)=>
   d.append(bouton('↑','Monter',()=>deplacer(k,k-1)),bouton('↓','Descendre',()=>deplacer(k,k+1)),
    bouton('×','Retirer de la file',()=>{file.splice(k,1);majFile()}));return d}))}
 if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagation();file.push(+b.closest('li').dataset.id);majFile()});
+ document.querySelectorAll('.qn').forEach(b=>b.onclick=e=>{e.stopPropagation();file.unshift(+b.closest('li').dataset.id);majFile()});
  document.getElementById('fv').onclick=()=>{file=[];majFile()}}
 function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.shift();majFile();return play(n)}
  if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
@@ -599,6 +600,7 @@ def ligne_musique(i, titre, dossier, chemin, premier):
     img = f'<img src="{html.escape(src)}" loading="lazy" alt="">' if src else '<div class="ph">🎵</div>'
     return (f'<li data-id="{i}" data-t="{html.escape(titre)}" data-img="{html.escape(src)}">{img}'
             f'<span>{html.escape(titre)}<small>{html.escape(dossier)}</small></span>'
+            f'<button class="qn" title="Lire juste après" aria-label="Lire juste après">↱</button>'
             f'<button class="qa" title="Ajouter à la file d\'attente" aria-label="Ajouter à la file d\'attente">+</button></li>')
 
 
