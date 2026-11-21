@@ -21,7 +21,7 @@ ENCOURS_F = Path(__file__).with_name("mediacenter_encours.json")
 ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "dev", "quand"}
 COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
 RELEVE = {}  # id d'appareil -> heure du dernier relevé de commandes (= page ouverte, joignable)
-ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer", "volume", "deplacer", "soustitres"}
+ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer", "volume", "deplacer", "soustitres", "audio"}
 VIDEO = {}  # film/épisode en cours (pour la télécommande) : {"kind", "id", "titre", "t", "d", "lecture", "vol", "page", "dev", "quand"}
 SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
 VERROU = threading.Lock()
@@ -38,6 +38,10 @@ SUBS = {}  # chemin vidéo -> [fichiers .srt/.vtt/.ass]
 JASSUB_DIR = Path(__file__).with_name("jassub")  # rendu stylé des .ass (libass en WebAssembly), servi en local
 POLICES_DIR = Path(__file__).with_name("polices_cache")  # polices extraites des MKV
 POLICES = {}  # chemin vidéo -> [fichiers de police]
+AUDIO_DIR = Path(__file__).with_name("audio_cache")  # pistes audio converties pour le navigateur (AAC stéréo)
+AUDIOS = {}  # chemin vidéo -> [{"nom", "convertir"}] (pistes audio, via ffprobe)
+EXTRACTIONS = {}  # fichier de sortie -> "en cours" | message d'erreur
+NON_LU = {"ac3", "eac3", "dts", "truehd", "mlp", "pcm_bluray", "pcm_dvd"}  # codecs audio que les navigateurs ne lisent pas
 FONT_EXT = {".ttf", ".otf", ".ttc", ".woff", ".woff2"}
 for _ext, _type in ((".js", "text/javascript"), (".wasm", "application/wasm"), (".woff2", "font/woff2"),
                     (".ttf", "font/ttf"), (".otf", "font/otf")):
@@ -249,6 +253,55 @@ def nom_piste(flux):
     tags = {k.lower(): v for k, v in flux.get("tags", {}).items()}
     lang = tags.get("language", "")
     return " – ".join(x for x in (LANGUES.get(lang, "" if lang == "und" else lang), tags.get("title", "")) if x) or "Intégrés"
+
+
+def pistes_audio(chemin):
+    """Pistes audio d'une vidéo : [{"nom", "convertir"}] ; convertir = le navigateur ne sait pas la lire telle quelle."""
+    if not FFPROBE:
+        return []
+    if chemin not in AUDIOS:
+        try:
+            out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "a", "-show_entries",
+                                  "stream=codec_name:stream_tags=language,title", "-of", "json", chemin],
+                                 capture_output=True, timeout=30).stdout
+            flux = json.loads(out or b"{}").get("streams", [])
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            flux = []
+        AUDIOS[chemin] = [{"nom": f"{k + 1}. " + nom_piste(f).replace("Intégrés", "Piste") + f" ({f.get('codec_name', '?')})",
+                           "convertir": f.get("codec_name") in NON_LU} for k, f in enumerate(flux)]
+    return AUDIOS[chemin]
+
+
+def fichier_audio(chemin, n):
+    return AUDIO_DIR / (hashlib.sha1(f"{chemin}|{n}".encode()).hexdigest()[:16] + ".m4a")
+
+
+def extraire_audio(chemin, n):
+    """Lance (une fois) la conversion de la piste audio n en AAC stéréo ; renvoie "pret", "en cours" ou une erreur."""
+    sortie = fichier_audio(chemin, n)
+    if sortie.exists():
+        return "pret"
+    with VERROU:
+        etat = EXTRACTIONS.get(sortie)
+        if etat is None:
+            EXTRACTIONS[sortie] = etat = "en cours"
+            threading.Thread(target=_convertir_audio, args=(chemin, n, sortie), daemon=True).start()
+    return etat
+
+
+def _convertir_audio(chemin, n, sortie):
+    AUDIO_DIR.mkdir(exist_ok=True)
+    tmp = sortie.with_suffix(".tmp.m4a")
+    try:  # ponytail: cache jamais vidé (~150 Mo par piste de film) ; supprimer audio_cache/ pour libérer la place
+        r = subprocess.run([FFMPEG, "-v", "error", "-y", "-i", chemin, "-map", f"0:a:{n}", "-vn", "-c:a", "aac", "-b:a", "192k",
+                            "-ac", "2", "-movflags", "+faststart", str(tmp)], capture_output=True, timeout=3600)
+        if r.returncode:
+            raise OSError(r.stderr.decode(errors="replace")[-200:])
+        tmp.replace(sortie)
+        EXTRACTIONS.pop(sortie, None)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        EXTRACTIONS[sortie] = f"erreur : {e}"
+        print(f"⚠ Piste audio non convertie ({Path(chemin).name}) : {e}")
 
 
 def pistes_integrees(chemin):
@@ -486,6 +539,7 @@ def valider_commande(data):
     cmd, k, v = data["cmd"], data.get("k", ""), float(data.get("v", 0))
     if (cmd not in ORDRES or not isinstance(k, str) or len(k) >= 2000 or (cmd == "jouer" and not k)
             or not (-3600 <= v <= 3600 if cmd == "deplacer" else v in range(-1, 100) if cmd == "soustitres"
+                    else v in range(100) if cmd == "audio"
                     else 0 <= v <= 1)):  # NaN refusé aussi ; deplacer : secondes ; soustitres : n° de piste, -1 = aucun
         raise ValueError("commande invalide")
     return {"cmd": cmd, "k": k, "v": v}
@@ -495,12 +549,15 @@ def valider_video(data):
     """État du lecteur vidéo envoyé par l'appareil qui joue un film/épisode, ou ValueError."""
     v = {"kind": data["kind"], "id": int(data["id"]), "titre": data["titre"], "t": float(data["t"]), "d": float(data.get("d") or 0),
          "lecture": data["lecture"], "vol": float(data.get("vol", 1)), "page": data.get("page", ""), "dev": data.get("dev", ""),
-         "st": data.get("st", []), "sti": data.get("sti", -1)}  # sous-titres : noms des pistes, n° de celle affichée (-1 = aucune)
+         "st": data.get("st", []), "sti": data.get("sti", -1),  # sous-titres : noms des pistes, n° de celle affichée (-1 = aucune)
+         "au": data.get("au", []), "aui": data.get("aui", 0)}  # pistes audio : noms, n° de celle choisie
     if not (v["kind"] in ("films", "series") and v["id"] >= 0 and isinstance(v["titre"], str) and len(v["titre"]) < 500
             and all(math.isfinite(v[x]) and 0 <= v[x] < 1e6 for x in ("t", "d")) and isinstance(v["lecture"], bool)
             and 0 <= v["vol"] <= 1 and all(isinstance(v[x], str) and len(v[x]) < 500 for x in ("page", "dev"))
             and isinstance(v["st"], list) and len(v["st"]) < 50 and all(isinstance(x, str) and len(x) < 200 for x in v["st"])
-            and v["sti"] in range(-1, len(v["st"]))):
+            and v["sti"] in range(-1, len(v["st"]))
+            and isinstance(v["au"], list) and len(v["au"]) < 50 and all(isinstance(x, str) and len(x) < 200 for x in v["au"])
+            and (v["aui"] in range(len(v["au"])) or v["aui"] == 0)):
         raise ValueError("état vidéo invalide")
     return {**v, "t": round(v["t"], 1), "quand": time.time()}
 
@@ -551,7 +608,8 @@ ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;fon
 .qn+.qa{margin-left:0}.qn,.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qn:hover,.qa:hover,.fi button:hover{color:#fff}
 #vt{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#vt label{white-space:nowrap}
 #vtv{vertical-align:middle;width:140px;accent-color:#e50914}
-#vts{background:#2a2a2a;color:#eee;border:0;border-radius:6px;padding:4px 6px;max-width:200px}
+#pal{display:block;margin-top:8px;color:#aaa}#pae{color:#e50914}
+#vts,#vta,#pas{background:#2a2a2a;color:#eee;border:0;border-radius:6px;padding:4px 6px;max-width:200px}
 #tc{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#tc .bt{font-size:18px}#tc label{white-space:nowrap}#tcv{vertical-align:middle;width:140px;accent-color:#e50914}
 #fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
 .fi{display:flex;align-items:center;padding:6px 0;cursor:grab;border-top:1px solid #262626}.fi:hover{color:#fff}
@@ -584,7 +642,7 @@ function play(i,auto=true){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.
  if(vid&&last>5)p.addEventListener('loadedmetadata',()=>p.currentTime=last,{once:true});  // reprise
  p.src='/media/{kind}/'+l.dataset.id;
  p.querySelectorAll('track').forEach(t=>t.remove());
- assOff();
+ assOff();if(window.audioReset)audioReset(l);
  if(vid)fetch('/pistes/{kind}/'+l.dataset.id).then(r=>r.json()).then(st=>{if(lis[cur]!==l)return;  // déjà passé à une autre vidéo
   const choix=Math.max(0,st.findIndex(s=>/fr|vf/i.test(s.nom)));  // français de préférence
   st.forEach((s,n)=>{const t=document.createElement('track');
@@ -612,19 +670,52 @@ function commande(cmd,k,pour,v){fetch('/commande'+(pour?'?pour='+pour:''),{metho
 let vdistant=false;  // télécommande vidéo : un autre appareil joue un film/épisode de cette même page
 lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:distant?commande('jouer',l.dataset.k)
  :vdistant?commande('jouer',l.dataset.id,'video'):play(i));
+// ---- Pistes audio : le navigateur ne sait pas changer de piste ; une autre piste est convertie une fois par le PC (ffmpeg)
+// puis jouée dans un lecteur audio caché, synchronisé avec l'image (le son d'origine de la vidéo est coupé).
+if(vid){const pa=new Audio(),pas=document.getElementById('pas'),pal=document.getElementById('pal'),pae=document.getElementById('pae');
+ let paActif=false,volPrec=1,demande=0,auListe=[];window.audioIdx=0;
+ window.audioNoms=()=>auListe.map(a=>a.nom);
+ const sync=()=>{if(paActif&&Math.abs(pa.currentTime-p.currentTime)>0.25)pa.currentTime=p.currentTime};
+ p.addEventListener('play',()=>{if(paActif){sync();pa.play().catch(()=>{})}});
+ for(const ev of ['pause','waiting'])p.addEventListener(ev,()=>{if(paActif)pa.pause()});
+ p.addEventListener('playing',()=>{if(paActif){sync();pa.play().catch(()=>{})}});
+ p.addEventListener('seeked',sync);p.addEventListener('ratechange',()=>{pa.playbackRate=p.playbackRate});
+ setInterval(()=>{if(paActif&&!p.paused)sync()},1000);  // rattrape la dérive
+ // Son d'origine coupé (p.muted) : le volume et le bouton muet du lecteur pilotent la piste convertie.
+ p.addEventListener('volumechange',()=>{if(!paActif)return;if(!p.muted){if(p.volume!==volPrec)pa.muted=false;else pa.muted=!pa.muted;p.muted=true}
+  pa.volume=volPrec=p.volume});
+ function natif(){paActif=false;pa.pause();pa.removeAttribute('src');pa.load();p.muted=false}
+ window.choisirAudio=async n=>{const l=lis[cur],id=l.dataset.id,jeton=++demande;audioIdx=n;pas.value=String(n);pae.textContent='';
+  if(window.etatVideo)etatVideo();
+  if(n===0&&!(auListe[0]||{}).convertir)return natif();  // piste d'origine lisible : rien à faire
+  pae.textContent='préparation de la piste… (jusqu’à une minute la première fois)';
+  for(;;){let e;try{e=(await (await fetch('/audio-etat/{kind}/'+id+'/'+n)).json()).etat}catch(x){e='erreur réseau'}
+   if(jeton!==demande)return;if(e==='pret')break;if(e!=='en cours'){pae.textContent=e;return}await new Promise(r=>setTimeout(r,2000))}
+  pa.src='/audio/{kind}/'+id+'/'+n;pa.volume=volPrec=p.volume;pa.muted=false;
+  await new Promise(r=>pa.addEventListener('loadedmetadata',r,{once:true}));if(jeton!==demande)return;
+  paActif=true;p.muted=true;pae.textContent='';sync();if(!p.paused)pa.play().catch(()=>{})};
+ pas.onchange=()=>choisirAudio(+pas.value);
+ window.audioReset=async l=>{demande++;natif();auListe=[];audioIdx=0;pal.hidden=true;pae.textContent='';
+  try{auListe=await (await fetch('/audios/{kind}/'+l.dataset.id)).json()}catch(e){}if(lis[cur]!==l)return;
+  pas.replaceChildren(...auListe.map((a,j)=>{const o=document.createElement('option');o.value=String(j);
+   o.textContent=a.nom+(a.convertir?' – convertie':'');return o}));
+  pal.hidden=auListe.length<2&&!(auListe[0]||{}).convertir;
+  if((auListe[0]||{}).convertir)choisirAudio(0);  // son illisible par le navigateur (AC3, DTS…) : converti d'office
+  if(window.etatVideo)etatVideo()}}
 // ---- Films / séries : l'appareil qui joue publie son état et exécute les ordres ; les autres affichent la télécommande.
 if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
  const vt=document.getElementById('vt'),vtpp=document.getElementById('vtpp'),vtv=document.getElementById('vtv'),
   hms=s=>{s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s/60)%60;return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(s%60).padStart(2,'0')};
  window.etatVideo=()=>{if(!vproprio||cur<0)return;navigator.sendBeacon('/video',JSON.stringify({kind:'{kind}',id:+lis[cur].dataset.id,
   titre:lis[cur].dataset.t,t:p.currentTime||0,d:p.duration||0,lecture:!p.paused,vol:p.volume,page:location.search,dev:APPAREIL,
-  st:[...p.textTracks].map(t=>t.label),sti:[...p.textTracks].findIndex(t=>t.mode==='showing')}))};
+  st:[...p.textTracks].map(t=>t.label),sti:[...p.textTracks].findIndex(t=>t.mode==='showing'),au:audioNoms(),aui:audioIdx}))};
  p.textTracks.addEventListener('change',()=>etatVideo());p.textTracks.addEventListener('addtrack',()=>setTimeout(etatVideo,400));
  p.addEventListener('play',()=>{vproprio=true;etatVideo()});for(const ev of ['pause','seeked','loadedmetadata'])p.addEventListener(ev,()=>etatVideo());  // loadedmetadata : durée connue
  p.addEventListener('volumechange',()=>{clearTimeout(volV);volV=setTimeout(etatVideo,300)});
  setInterval(async()=>{if(!vproprio)return;try{for(const c of await (await fetch('/commande?dev='+APPAREIL)).json()){
   if(c.cmd==='lecture')p.play().catch(()=>{});else if(c.cmd==='pause')p.pause();else if(c.cmd==='volume')p.volume=c.v;
   else if(c.cmd==='deplacer')p.currentTime=Math.max(0,Math.min(p.duration||1e9,p.currentTime+c.v));
+  else if(c.cmd==='audio'&&c.v<audioNoms().length)choisirAudio(c.v);
   else if(c.cmd==='soustitres')[...p.textTracks].forEach((t,j)=>t.mode=j===c.v?'showing':'disabled');  // déclenche aussi le rendu .ass
   else if(c.cmd==='suivant')suivant();else if(c.cmd==='jouer'){const i=lis.findIndex(l=>l.dataset.id===c.k);if(i>=0)play(i)}}}catch(e){}},1000);
  vt.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>commande('deplacer','','video',+b.dataset.v));
@@ -633,6 +724,8 @@ if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
  vtv.oninput=envoyerVolV;vtv.onchange=()=>{vtEnvoi=0;envoyerVolV()};
  const vts=document.getElementById('vts'),vtsl=document.getElementById('vtsl');let vtsListe='',vtsTouche=0;
  vts.onchange=()=>{vtsTouche=Date.now();commande('soustitres','','video',+vts.value)};
+ const vta=document.getElementById('vta'),vtal=document.getElementById('vtal');let vtaListe='',vtaTouche=0;
+ vta.onchange=()=>{vtaTouche=Date.now();commande('audio','','video',+vta.value)};
  async function suivreVideo(){try{const e=await (await fetch('/video?dev='+APPAREIL)).json();
   const visible=!!(e.titre&&!e.moi&&e.joignable&&p.paused);vt.hidden=!visible;vdistant=visible&&e.page===location.search&&e.kind==='{kind}';
   if(!visible)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);
@@ -642,7 +735,10 @@ if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
   const st=e.st||[],cle=JSON.stringify(st);vtsl.hidden=!st.length;
   if(cle!==vtsListe){vtsListe=cle;vts.replaceChildren(...[['-1','Sans sous-titres'],...st.map((n,j)=>[String(j),n])].map(([v,n])=>{
    const o=document.createElement('option');o.value=v;o.textContent=n;return o}))}
-  if(Date.now()-vtsTouche>3000)vts.value=String(e.sti??-1)}catch(e){}}
+  if(Date.now()-vtsTouche>3000)vts.value=String(e.sti??-1);
+  const au=e.au||[],cleA=JSON.stringify(au);vtal.hidden=au.length<2;
+  if(cleA!==vtaListe){vtaListe=cleA;vta.replaceChildren(...au.map((n,j)=>{const o=document.createElement('option');o.value=String(j);o.textContent=n;return o}))}
+  if(Date.now()-vtaTouche>3000)vta.value=String(e.aui??0)}catch(e){}}
  suivreVideo();setInterval(suivreVideo,2000)}
 // Musique : aléatoire (chaque morceau visible une fois) ; bouton répéter : non → tout → un seul morceau → non.
 const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=0,joues=new Set(),hist=[];  // hist : morceaux joués en aléatoire, pour « précédent »
@@ -788,6 +884,18 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             f = JASSUB_DIR / m[1]
             return self.send_file(str(f) if f.is_file() else None)
+        m = re.fullmatch(r"/(audios|audio|audio-etat)/(films|series)/(\d+)(?:/(\d+))?", url.path)
+        if m and int(m[3]) < len(LIB[m[2]]) and (m[1] != "audios") == bool(m[4]):
+            chemin = LIB[m[2]][int(m[3])][2]
+            if m[1] == "audios":
+                return self.send_bytes(json.dumps(pistes_audio(chemin), ensure_ascii=False).encode(), "application/json")
+            n = int(m[4])
+            if not FFMPEG or n >= len(pistes_audio(chemin)):
+                return self.send_error(404)
+            if m[1] == "audio-etat":  # lance la conversion si besoin ; le navigateur interroge jusqu'à « pret »
+                return self.send_bytes(json.dumps({"etat": extraire_audio(chemin, n)}).encode(), "application/json")
+            f = fichier_audio(chemin, n)
+            return self.send_file(str(f) if f.exists() else None)
         m = re.fullmatch(r"/(pistes|polices|sub|ass|police)/(films|series)/(\d+)(?:/(\d+))?", url.path)
         if m and int(m[3]) < len(LIB[m[2]]) and (m[1] in ("sub", "ass", "police")) == bool(m[4]):
             chemin = LIB[m[2]][int(m[3])][2]
@@ -852,11 +960,13 @@ class Handler(BaseHTTPRequestHandler):
                   ' <label>🔊 <input id="tcv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label></div>'
                   '<div id="fa" hidden><b>À suivre</b> <button id="fv" class="bt">Vider la file</button><div id="fl"></div></div>') if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>'
+            '<label id="pal" hidden>🔈 Audio <select id="pas" aria-label="Piste audio"></select> <span id="pae"></span></label>'
             '<div id="vt" hidden>🎛 <span id="vtt"></span><br><button class="bt" data-v="-10" aria-label="Reculer de 10 secondes">⏪ 10 s</button>'
             '<button class="bt" id="vtpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-v="30" aria-label="Avancer de 30 secondes">30 s ⏩</button>'
             + ('<button class="bt" id="vtsv" aria-label="Épisode suivant (à distance)">⏭ Épisode suivant</button>' if kind == "series" else "")
             + ' <label>🔊 <input id="vtv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label>'
-            ' <label id="vtsl" hidden>💬 <select id="vts" aria-label="Sous-titres (à distance)"></select></label></div>')
+            ' <label id="vtsl" hidden>💬 <select id="vts" aria-label="Sous-titres (à distance)"></select></label>'
+            ' <label id="vtal" hidden>🔈 <select id="vta" aria-label="Piste audio (à distance)"></select></label></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])

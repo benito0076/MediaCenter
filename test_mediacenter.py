@@ -169,4 +169,18 @@ for mauvais in ({**v, "sti": 2}, {**v, "st": [1]}, {**v, "st": "fr"}):
         raise AssertionError(mauvais)
     except (ValueError, TypeError):
         pass
+assert mediacenter.valider_commande({"cmd": "audio", "v": 1})["v"] == 1
+for mauvais in ({"cmd": "audio", "v": -1}, {"cmd": "audio", "v": 0.5}):
+    try:
+        mediacenter.valider_commande(mauvais)
+        raise AssertionError(mauvais)
+    except ValueError:
+        pass
+v = mediacenter.valider_video({"kind": "films", "id": 0, "titre": "Dune", "t": 1, "lecture": True, "au": ["1. Français", "2. Anglais"], "aui": 1})
+assert (v["au"], v["aui"]) == (["1. Français", "2. Anglais"], 1)
+try:
+    mediacenter.valider_video({**v, "aui": 5})
+    raise AssertionError("aui hors limites")
+except ValueError:
+    pass
 print("OK")
