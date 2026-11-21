@@ -1,5 +1,5 @@
 """python test_mediacenter.py"""
-from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode, maj_suivi
+from mediacenter import nettoyer, choisir, choisir_tmdb, nettoyer_album, pochette_integree, episode, maj_suivi, srt_vers_vtt, lire_texte, sous_titres, nom_sous_titre
 import os, tempfile
 
 assert nettoyer("Le.Film.2024.1080p.x264-GRP") == ("Le Film", "2024")
@@ -54,4 +54,23 @@ for mauvais in ({"t": float("nan")}, {"t": -1}, {}):
         raise AssertionError(mauvais)
     except (ValueError, KeyError):
         pass
+
+srt = "1\r\n00:00:01,500 --> 0:00:03,000\r\n{\\an8}<i>Salut</i>\r\n"
+assert srt_vers_vtt(srt) == "WEBVTT\n\n1\n00:00:01.500 --> 00:00:03.000\n<i>Salut</i>\n"
+assert srt_vers_vtt("WEBVTT\n\nx") == "WEBVTT\n\nx"
+with tempfile.TemporaryDirectory() as d:
+    from pathlib import Path
+    D = Path(d)
+    (D / "Saison").mkdir(); (D / "Film").mkdir(); (D / "Film" / "Subs").mkdir()
+    for f in ["Saison/Ep.S01E01.mkv", "Saison/Ep.S01E01.fr.srt", "Saison/Ep.S01E02.mkv", "Saison/autre.srt",
+              "Film/Film.mkv", "Film/Subs/2_French.srt", "Film/Subs/notes.txt"]:
+        (D / f).write_bytes(b"")
+    assert sous_titres(D / "Saison/Ep.S01E01.mkv", False) == [str(D / "Saison/Ep.S01E01.fr.srt")]
+    assert sous_titres(D / "Saison/Ep.S01E02.mkv", False) == []
+    assert sous_titres(D / "Film/Film.mkv", True) == [str(D / "Film/Subs/2_French.srt")]
+    assert nom_sous_titre(D / "Saison/Ep.S01E01.fr.srt", D / "Saison/Ep.S01E01.mkv") == "fr"
+    assert nom_sous_titre(D / "Film/Subs/2_French.srt", D / "Film/Film.mkv") == "2 French"
+    (D / "a.srt").write_bytes("Déjà vu".encode("cp1252")); assert lire_texte(D / "a.srt") == "Déjà vu"
+    (D / "b.srt").write_bytes("Déjà vu".encode("utf-8-sig")); assert lire_texte(D / "b.srt") == "Déjà vu"
+    (D / "c.srt").write_bytes("Déjà vu".encode("utf-16")); assert lire_texte(D / "c.srt") == "Déjà vu"
 print("OK")

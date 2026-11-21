@@ -26,6 +26,7 @@ LIB = {"films": [], "series": [], "musique": []}  # (titre, sous-dossier ou nom 
 META = {}  # nom de fichier -> {"titre", "annee", "resume", "affiche"} ; "serie:<nom>" -> idem ; "album:<dossier>" -> {"affiche"} ; {} = introuvable
 COVERS = {}  # dossier de musique -> image locale (cover.jpg…), ou morceau avec pochette intégrée, ou None
 IMG = {".jpg", ".jpeg", ".png", ".webp"}
+SUBS = {}  # chemin vidéo -> [fichiers .srt/.vtt]
 
 JUNK = re.compile(r"\b(2160p|1080p|720p|480p|4k|uhd|hdr|bluray|bdrip|brrip|webrip|web ?dl|web|hdtv|dvdrip|hdrip|"
                   r"x264|x265|h264|h265|hevc|10bit|aac|ac3|dts|truefrench|french|vff|vfq|vf|vostfr|multi|subfrench|"
@@ -149,6 +150,43 @@ def episode(stem, dossiers):
     return nettoyer(s[:m.start()])[0] or dossier or "Divers", ep
 
 
+def sous_titres(video, seule):
+    """Sous-titres d'une vidéo : même nom (Film.fr.srt) ; si elle est seule dans son dossier, tous ceux du dossier
+    et d'un sous-dossier Subs/."""
+    dossiers = [video.parent] + [d for d in video.parent.iterdir()
+                                 if d.is_dir() and d.name.lower() in ("subs", "subtitles", "sous-titres", "st")]
+    return [str(f) for d in dossiers for f in sorted(d.iterdir())
+            if f.suffix.lower() in (".srt", ".vtt") and f.is_file()
+            and (seule or f.name.lower().startswith(video.stem.lower()))]
+
+
+def nom_sous_titre(fichier, video):
+    """'Film.2020.fr.srt' -> 'fr' ; 'Subs/2_French.srt' -> '2 French'"""
+    stem = Path(fichier).stem
+    if stem.lower().startswith(Path(video).stem.lower()):
+        stem = stem[len(Path(video).stem):]
+    return re.sub(r"[._\-]+", " ", stem).strip() or "Sous-titres"
+
+
+def lire_texte(chemin):
+    b = Path(chemin).read_bytes()
+    if b[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return b.decode("utf-16")
+    try:
+        return b.decode("utf-8-sig")
+    except UnicodeDecodeError:  # vieux .srt français : Windows-1252
+        return b.decode("cp1252", errors="replace")
+
+
+def srt_vers_vtt(texte):
+    texte = texte.replace("\r\n", "\n").replace("\r", "\n")
+    if texte.lstrip().startswith("WEBVTT"):
+        return texte
+    texte = re.sub(r"\{\\[^}]*\}", "", texte)  # balises de style ASS ({\an8}…)
+    texte = re.sub(r"(\d+):(\d{2}):(\d{2})[,.](\d{3})", lambda m: f"{int(m[1]):02}:{m[2]}:{m[3]}.{m[4]}", texte)
+    return "WEBVTT\n\n" + texte
+
+
 def scan(dossiers):
     for kind, roots in dossiers.items():
         items = []
@@ -169,6 +207,15 @@ def scan(dossiers):
                         if not COVERS[str(p.parent)] and pochette_integree(str(p)):
                             COVERS[str(p.parent)] = str(p)
         LIB[kind] = sorted(items, key=lambda i: (i[1].lower(), i[0].lower()))
+        if kind != "musique":
+            par_dossier = {}
+            for _, _, c in items:
+                par_dossier[str(Path(c).parent)] = par_dossier.get(str(Path(c).parent), 0) + 1
+            for _, _, c in items:
+                try:
+                    SUBS[c] = sous_titres(Path(c), par_dossier[str(Path(c).parent)] == 1)
+                except OSError:
+                    pass
 
 
 def meilleur(resultats, annee, champ_date):
@@ -284,6 +331,9 @@ def suivi(chemin):
     e = SUIVI.get(Path(chemin).name, {})
     pct = min(100, int(100 * e["t"] / e["d"])) if e.get("t") and e.get("d") else 0
     attrs = f' data-pos="{e.get("t", 0)}"' + (' class="vu"' if e.get("vu") else "")
+    if SUBS.get(chemin):
+        noms = [nom_sous_titre(f, chemin) for f in SUBS[chemin]]
+        attrs += f' data-st="{html.escape(json.dumps(noms, ensure_ascii=False))}"'
     return attrs, (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + '<b class="ck" title="Vu / pas vu">✓</b>'
 
 
@@ -329,7 +379,12 @@ document.querySelectorAll('.ck').forEach(b=>b.onclick=e=>{e.stopPropagation();co
 function play(i){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.classList.remove('on'));
  cur=i;const l=lis[i];l.classList.add('on');last=+l.dataset.pos||0;
  if(vid&&last>5)p.addEventListener('loadedmetadata',()=>p.currentTime=last,{once:true});  // reprise
- p.src='/media/{kind}/'+l.dataset.id;p.play();
+ p.src='/media/{kind}/'+l.dataset.id;
+ p.querySelectorAll('track').forEach(t=>t.remove());
+ const st=JSON.parse(l.dataset.st||'[]'),choix=Math.max(0,st.findIndex(lb=>/fr|vf/i.test(lb)));  // français de préférence
+ st.forEach((lb,n)=>{const t=document.createElement('track');
+  Object.assign(t,{kind:'subtitles',label:lb,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});p.appendChild(t)});
+ p.play();
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
 lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:play(i));
@@ -391,6 +446,17 @@ class Handler(BaseHTTPRequestHandler):
             if cover and Path(cover).suffix.lower() in EXT["musique"]:
                 return self.send_bytes(*(pochette_integree(cover) or (b"", "")))
             return self.send_file(cover)
+        m = re.fullmatch(r"/sub/(films|series)/(\d+)/(\d+)", url.path)
+        if m:
+            idx, n = int(m[2]), int(m[3])
+            subs = SUBS.get(LIB[m[1]][idx][2], []) if idx < len(LIB[m[1]]) else []
+            if n >= len(subs):
+                return self.send_error(404)
+            try:
+                vtt = srt_vers_vtt(lire_texte(subs[n]))
+            except OSError:
+                return self.send_error(404)
+            return self.send_bytes(vtt.encode(), "text/vtt; charset=utf-8")
         if url.path != "/":
             return self.send_error(404)
         qs = parse_qs(url.query)
