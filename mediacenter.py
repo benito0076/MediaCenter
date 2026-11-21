@@ -485,7 +485,8 @@ ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;fon
 #sv,#pv{color:#eee}
 .qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qa:hover,.fi button:hover{color:#fff}
 #fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
-.fi{display:flex;align-items:center;padding:6px 0;cursor:pointer;border-top:1px solid #262626}.fi:hover{color:#fff}.bt[aria-pressed=true]{background:#e50914;color:#fff}
+.fi{display:flex;align-items:center;padding:6px 0;cursor:grab;border-top:1px solid #262626}.fi:hover{color:#fff}
+.fi button+button{margin-left:0}.fi.glisse{opacity:.4}.fi.cible{border-top:2px solid #e50914}.bt[aria-pressed=true]{background:#e50914;color:#fff}
 #pc{width:220px;height:220px;object-fit:cover;border-radius:8px;display:block;margin-bottom:12px}
 ul.grid img,.show{display:flex;gap:16px;align-items:flex-start;margin:16px 0}.show img{width:140px;border-radius:6px;flex:none}
 .ph{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:6px;background:#222;
@@ -551,10 +552,19 @@ if(al){al.setAttribute('aria-pressed',alea);majRepete();
  rp.onclick=()=>{repete=(repete+1)%3;majRepete()}}
 // File d'attente : les morceaux ajoutés avec « + » passent avant la suite normale (ou aléatoire).
 let file=[];const fa=document.getElementById('fa'),fl=document.getElementById('fl');
-function majFile(){fa.hidden=!file.length;fl.replaceChildren(...file.map((i,k)=>{const d=document.createElement('div'),
-  x=document.createElement('button');d.className='fi';d.textContent=(k+1)+'. '+lis[i].dataset.t;
-  d.onclick=()=>{file.splice(k,1);majFile();play(i)};x.textContent='×';x.title=x.ariaLabel='Retirer de la file';
-  x.onclick=e=>{e.stopPropagation();file.splice(k,1);majFile()};d.append(x);return d}))}
+let glisse=null;
+function deplacer(a,b){if(a==null||a===b||b<0||b>=file.length)return;file.splice(b,0,file.splice(a,1)[0]);majFile()}
+function bouton(txt,titre,fn){const x=document.createElement('button');x.textContent=txt;x.title=x.ariaLabel=titre;
+ x.onclick=e=>{e.stopPropagation();fn()};return x}
+function majFile(){fa.hidden=!file.length;fl.replaceChildren(...file.map((i,k)=>{const d=document.createElement('div');
+  d.className='fi';d.textContent=(k+1)+'. '+lis[i].dataset.t;d.onclick=()=>{file.splice(k,1);majFile();play(i)};
+  // Glisser-déposer pour réorganiser ; ↑ ↓ pour le clavier et les écrans tactiles.
+  d.draggable=true;d.ondragstart=e=>{glisse=k;d.classList.add('glisse');e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',k)};
+  d.ondragend=()=>{glisse=null;d.classList.remove('glisse')};
+  d.ondragover=e=>{e.preventDefault();d.classList.add('cible')};d.ondragleave=()=>d.classList.remove('cible');
+  d.ondrop=e=>{e.preventDefault();d.classList.remove('cible');deplacer(glisse,k)};
+  d.append(bouton('↑','Monter',()=>deplacer(k,k-1)),bouton('↓','Descendre',()=>deplacer(k,k+1)),
+   bouton('×','Retirer de la file',()=>{file.splice(k,1);majFile()}));return d}))}
 if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagation();file.push(+b.closest('li').dataset.id);majFile()});
  document.getElementById('fv').onclick=()=>{file=[];majFile()}}
 function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.shift();majFile();return play(n)}
