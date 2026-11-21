@@ -183,4 +183,22 @@ try:
     raise AssertionError("aui hors limites")
 except ValueError:
     pass
+# Nettoyage du cache audio : on supprime les pistes utilisées il y a le plus longtemps jusqu'à passer sous la limite.
+with tempfile.TemporaryDirectory() as d:
+    ancien, mediacenter.AUDIO_DIR = mediacenter.AUDIO_DIR, Path(d)
+    try:
+        for k, nom in enumerate(["a.m4a", "b.m4a", "c.m4a", "d.m4a"]):  # a = plus ancien usage, d = plus récent
+            (Path(d) / nom).write_bytes(b"x" * 100)
+            os.utime(Path(d) / nom, (1000 + k, 1000 + k))
+        (Path(d) / "e.tmp.m4a").write_bytes(b"x" * 100)  # conversion en cours : jamais supprimée hors démarrage
+        mediacenter.nettoyer_cache_audio(250)
+        assert sorted(f.name for f in Path(d).iterdir()) == ["c.m4a", "d.m4a", "e.tmp.m4a"]
+        mediacenter.nettoyer_cache_audio(1000, demarrage=True)
+        assert sorted(f.name for f in Path(d).iterdir()) == ["c.m4a", "d.m4a"]
+        mediacenter.nettoyer_cache_audio(10, garder=Path(d) / "d.m4a")  # limite minuscule : la piste neuve reste
+        assert sorted(f.name for f in Path(d).iterdir()) == ["d.m4a"]
+        mediacenter.AUDIO_DIR = Path(d) / "absent"
+        mediacenter.nettoyer_cache_audio(0)  # dossier absent : rien à faire, pas d'erreur
+    finally:
+        mediacenter.AUDIO_DIR = ancien
 print("OK")

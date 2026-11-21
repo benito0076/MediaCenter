@@ -39,6 +39,7 @@ JASSUB_DIR = Path(__file__).with_name("jassub")  # rendu stylé des .ass (libass
 POLICES_DIR = Path(__file__).with_name("polices_cache")  # polices extraites des MKV
 POLICES = {}  # chemin vidéo -> [fichiers de police]
 AUDIO_DIR = Path(__file__).with_name("audio_cache")  # pistes audio converties pour le navigateur (AAC stéréo)
+CACHE_AUDIO_MAX = [5 * 1024 ** 3]  # taille max du cache audio (octets), réglable avec --cache-audio
 AUDIOS = {}  # chemin vidéo -> [{"nom", "convertir"}] (pistes audio, via ffprobe)
 EXTRACTIONS = {}  # fichier de sortie -> "en cours" | message d'erreur
 NON_LU = {"ac3", "eac3", "dts", "truehd", "mlp", "pcm_bluray", "pcm_dvd"}  # codecs audio que les navigateurs ne lisent pas
@@ -272,6 +273,30 @@ def pistes_audio(chemin):
     return AUDIOS[chemin]
 
 
+def nettoyer_cache_audio(limite, demarrage=False, garder=None):
+    """Garde le cache audio sous `limite` octets en supprimant les pistes utilisées il y a le plus longtemps
+    (sauf `garder`, la piste qu'on vient de convertir : sinon une limite trop petite la reconvertirait sans fin)."""
+    if not AUDIO_DIR.is_dir():
+        return
+    if demarrage:  # conversions interrompues (PC éteint pendant une conversion)
+        for f in AUDIO_DIR.glob("*.tmp.m4a"):
+            f.unlink(missing_ok=True)
+    fichiers = sorted((f for f in AUDIO_DIR.glob("*.m4a") if not f.name.endswith(".tmp.m4a")),
+                      key=lambda f: f.stat().st_mtime)  # date de dernière utilisation (mise à jour à chaque lecture)
+    total = sum(f.stat().st_size for f in fichiers)
+    for f in fichiers:
+        if total <= limite:
+            break
+        if f == garder:
+            continue
+        try:
+            taille = f.stat().st_size
+            f.unlink()
+            total -= taille
+        except OSError:  # en cours de lecture (Windows verrouille le fichier) : on passe au suivant
+            pass
+
+
 def fichier_audio(chemin, n):
     return AUDIO_DIR / (hashlib.sha1(f"{chemin}|{n}".encode()).hexdigest()[:16] + ".m4a")
 
@@ -280,6 +305,10 @@ def extraire_audio(chemin, n):
     """Lance (une fois) la conversion de la piste audio n en AAC stéréo ; renvoie "pret", "en cours" ou une erreur."""
     sortie = fichier_audio(chemin, n)
     if sortie.exists():
+        try:
+            os.utime(sortie)  # marque la piste comme utilisée récemment (nettoyage du cache)
+        except OSError:
+            pass
         return "pret"
     with VERROU:
         etat = EXTRACTIONS.get(sortie)
@@ -298,6 +327,7 @@ def _convertir_audio(chemin, n, sortie):
         if r.returncode:
             raise OSError(r.stderr.decode(errors="replace")[-200:])
         tmp.replace(sortie)
+        nettoyer_cache_audio(CACHE_AUDIO_MAX[0], garder=sortie)
         EXTRACTIONS.pop(sortie, None)
     except (OSError, subprocess.TimeoutExpired) as e:
         EXTRACTIONS[sortie] = f"erreur : {e}"
@@ -1117,11 +1147,13 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--reseau", action="store_true", help="accessible depuis la TV/téléphone du réseau local")
     ap.add_argument("--tmdb", metavar="CLE", help="clé TMDB (themoviedb.org) pour de meilleures affiches ; mémorisée")
+    ap.add_argument("--cache-audio", type=float, metavar="GO",
+                    help="taille max du cache des pistes audio converties, en Go (défaut 5) ; mémorisée")
     ap.add_argument("--hors-ligne", action="store_true", help="ne pas chercher les affiches sur internet")
     a = ap.parse_args()
 
     cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
-    nouveau = {"films": a.films, "series": a.series, "musique": a.musique, "tmdb": a.tmdb}
+    nouveau = {"films": a.films, "series": a.series, "musique": a.musique, "tmdb": a.tmdb, "cache_audio": a.cache_audio}
     if any(nouveau.values()):
         cfg.update({k: v for k, v in nouveau.items() if v})
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
@@ -1146,6 +1178,8 @@ def main():
             FILE[:] = valider_file(json.loads(FILE_F.read_text("utf-8")))
         except ValueError:
             print("⚠ mediacenter_file.json illisible : file d'attente vide")
+    CACHE_AUDIO_MAX[0] = int(max(0.1, cfg.get("cache_audio") or 5) * 1024 ** 3)
+    nettoyer_cache_audio(CACHE_AUDIO_MAX[0], demarrage=True)
     scan(dossiers)
     print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés.")
     if not (FFMPEG and FFPROBE) and any(c.lower().endswith(".mkv") for k in ("films", "series") for _, _, c in LIB[k]):
