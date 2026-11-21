@@ -12,23 +12,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Tests (sous Windows)
-        run: python test_mediacenter.py
-      - name: Fabrication du .exe
+      - name: Tests (sous Windows, avec l'icône et le registre)
         run: |
-          pip install pyinstaller==6.11.1
-          pyinstaller --onefile --name MediaCenter --add-data "jassub;jassub" --add-data "hlsjs;hlsjs" mediacenter.py
-      - name: Essai du .exe (démarrage, page, JASSUB embarqué)
+          pip install pyinstaller==6.11.1 pystray==0.19.5 pillow==11.0.0
+          python test_mediacenter.py
+      - name: Fabrication du .exe
+        run: pyinstaller --onefile --noconsole --name MediaCenter --hidden-import pystray._win32 --add-data "jassub;jassub" --add-data "hlsjs;hlsjs" mediacenter.py
+      - name: Essai du .exe (démarrage sans console, page, JASSUB et hls.js embarqués, 2e lancement)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force films | Out-Null
-          $p = Start-Process -FilePath dist\MediaCenter.exe -ArgumentList '--films','films','--hors-ligne','--port','8765' -PassThru -RedirectStandardOutput sortie.txt
+          $p = Start-Process -FilePath dist\MediaCenter.exe -ArgumentList '--films','films','--hors-ligne','--port','8765','--sans-navigateur' -PassThru
           Start-Sleep 8
           $page = Invoke-WebRequest http://localhost:8765/ -UseBasicParsing
           $js = Invoke-WebRequest http://localhost:8765/jassub/jassub.js -UseBasicParsing
           $hls = Invoke-WebRequest http://localhost:8765/hlsjs/hls.light.min.js -UseBasicParsing
+          $p2 = Start-Process -FilePath dist\MediaCenter.exe -ArgumentList '--hors-ligne','--port','8765','--sans-navigateur' -PassThru -Wait
+          $encore = -not $p.HasExited
           Stop-Process $p
-          Get-Content sortie.txt
+          Get-Content dist\mediacenter.log
+          if ($p2.ExitCode -ne 0) { throw '2e lancement en erreur' }
+          if (-not $encore) { throw 'le 1er lancement s est arrêté' }
+          if (-not (Select-String -Path dist\mediacenter.log -Pattern 'films, ' -Quiet)) { throw 'journal mediacenter.log vide' }
           if ($page.Content -notmatch 'Media Center') { throw 'page absente' }
           if ($js.Headers['Content-Type'] -notmatch 'javascript') { throw 'JASSUB absent du .exe' }
           if ($hls.Content.Length -lt 100000) { throw 'hls.js absent du .exe' }

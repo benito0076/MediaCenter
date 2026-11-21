@@ -290,4 +290,15 @@ pl = mediacenter.playlist_hls(15.5)
 assert pl.splitlines()[-1] == "#EXT-X-ENDLIST" and pl.count(".ts") == 3 and "#EXTINF:3.500," in pl, pl
 c = mediacenter.commande_segment("/f.avi", 2)
 assert c[c.index("-ss") + 1] == "12" and c[c.index("-output_ts_offset") + 1] == "12" and c[c.index("-t") + 1] == "6"
+try:
+    img = mediacenter.image_icone()
+    assert img.size == (64, 64) and img.getpixel((32, 32))[:3] == (255, 255, 255) and img.getpixel((8, 32))[:3] == (229, 9, 20)
+except ImportError:
+    pass  # Pillow absent : pas d'icône, rien à vérifier
+assert "--sans-navigateur" in mediacenter.commande_demarrage()
+if os.name == "nt":  # vraie clé de registre de l'utilisateur : posée puis retirée
+    avant = mediacenter.demarrage_auto()
+    assert mediacenter.demarrage_auto(True) and mediacenter.demarrage_auto()
+    assert not mediacenter.demarrage_auto(False) and not mediacenter.demarrage_auto()
+    mediacenter.demarrage_auto(avant)
 print("OK")

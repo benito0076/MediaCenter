@@ -396,6 +396,97 @@ def html_accueil():
     return rangs or '<p class="vide">Rien pour l’instant : lance un film ou une série, ils apparaîtront ici.</p>'
 
 
+def commande_demarrage():
+    """Ligne lancée à l'ouverture de session Windows : sans navigateur (le Media Center attend près de l'horloge)."""
+    if GELE:
+        return f'"{sys.executable}" --sans-navigateur'
+    py = Path(sys.executable).with_name("pythonw.exe")  # pas de fenêtre de console au démarrage
+    return f'"{py if py.exists() else sys.executable}" "{Path(__file__).resolve()}" --sans-navigateur'
+
+
+def demarrage_auto(etat=None):
+    """Lit (etat=None) ou règle le lancement au démarrage de Windows (clé « Run » de l'utilisateur, sans droits admin)."""
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                        winreg.KEY_READ | winreg.KEY_SET_VALUE) as k:
+        if etat is None:
+            try:
+                return winreg.QueryValueEx(k, "MediaCenter")[0] == commande_demarrage()
+            except FileNotFoundError:
+                return False
+        if etat:
+            winreg.SetValueEx(k, "MediaCenter", 0, winreg.REG_SZ, commande_demarrage())
+        else:
+            try:
+                winreg.DeleteValue(k, "MediaCenter")
+            except FileNotFoundError:
+                pass
+        return etat
+
+
+def image_icone():
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((2, 2, 62, 62), 14, fill=(229, 9, 20))
+    d.polygon([(24, 16), (24, 48), (50, 32)], fill="white")
+    return img
+
+
+def icone_barre(url):
+    """Icône près de l'horloge (si pystray est là, c'est-à-dire dans le .exe) ; renvoie False sinon."""
+    try:
+        import pystray  # peut aussi échouer sans écran (Linux sans affichage) : pas seulement ImportError
+        img = image_icone()
+    except Exception as e:
+        if not isinstance(e, ImportError):
+            print(f"⚠ Icône près de l'horloge indisponible : {e}")
+        return False
+    menu = [pystray.MenuItem("Ouvrir le Media Center", lambda: webbrowser.open(url), default=True),
+            pystray.MenuItem("Actualiser la bibliothèque", lambda: print(f"{RESCAN[0]()} nouveau(x) fichier(s)."))]
+    if os.name == "nt":
+        menu.append(pystray.MenuItem("Démarrer avec Windows", lambda: demarrage_auto(not demarrage_auto()),
+                                     checked=lambda item: demarrage_auto()))
+    menu.append(pystray.MenuItem("Quitter", lambda icon: (icon.stop(), os._exit(0))))  # arrête aussi le serveur
+    try:
+        pystray.Icon("MediaCenter", img, "Media Center", pystray.Menu(*menu)).run()
+    except Exception as e:  # pas de bureau (session de service…) : le serveur continue sans icône
+        print(f"⚠ Icône près de l'horloge indisponible : {e}")
+        return False
+    return True
+
+
+def demander_dossiers_fenetre(cfg, dossiers):
+    """1er lancement du .exe sans console : choix des dossiers dans les fenêtres habituelles de Windows."""
+    import tkinter
+    from tkinter import filedialog, messagebox
+    racine = tkinter.Tk()
+    racine.withdraw()
+    messagebox.showinfo("Media Center", "Premier lancement : choisis tes dossiers de films, de séries et de musique.\n"
+                                        "(Annuler pour passer un dossier.)")
+    for k, nom in (("films", "films"), ("series", "séries TV"), ("musique", "musique")):
+        d = filedialog.askdirectory(title=f"Dossier de {nom}", mustexist=True)
+        if d:
+            cfg[k] = dossiers[k] = [d]
+    racine.destroy()
+
+
+def message_erreur(texte):
+    """Erreur bloquante : dans une fenêtre si pas de console (.exe), sinon à l'écran."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        try:
+            import tkinter
+            from tkinter import messagebox
+            r = tkinter.Tk()
+            r.withdraw()
+            messagebox.showerror("Media Center", texte)
+            r.destroy()
+            return
+        except Exception:  # pas d'affichage : le message reste dans mediacenter.log
+            pass
+    print(texte)
+
+
 def titre_lib(kind, i):
     titre, dossier, _ = LIB[kind][i]
     return f"{dossier} {titre}" if kind == "series" else titre
@@ -1731,6 +1822,8 @@ def main():
     ap.add_argument("--series", action="append", help="dossier de séries TV (répétable)")
     ap.add_argument("--musique", action="append", help="dossier de musique (répétable)")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--sans-navigateur", action="store_true", help="ne pas ouvrir le navigateur au lancement")
+    ap.add_argument("--demarrage-auto", choices=("oui", "non"), help="lancer le Media Center à l'ouverture de session Windows")
     ap.add_argument("--reseau", action="store_true", help="accessible depuis la TV/téléphone du réseau local")
     ap.add_argument("--tmdb", metavar="CLE", help="clé TMDB (themoviedb.org) pour de meilleures affiches ; mémorisée")
     ap.add_argument("--lecteur-externe", metavar="CHEMIN",
@@ -1741,6 +1834,11 @@ def main():
     ap.add_argument("--hors-ligne", action="store_true", help="ne pas chercher les affiches sur internet")
     a = ap.parse_args()
 
+    if a.demarrage_auto:
+        if os.name != "nt":
+            sys.exit("--demarrage-auto : seulement sous Windows.")
+        demarrage_auto(a.demarrage_auto == "oui")
+        print(f"Démarrage avec Windows : {a.demarrage_auto}.")
     cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
     nouveau = {"films": a.films, "series": a.series, "musique": a.musique, "tmdb": a.tmdb, "cache_audio": a.cache_audio,
                "lecteur_externe": a.lecteur_externe, "pin": a.pin}
@@ -1754,6 +1852,9 @@ def main():
             d = input(f"  Dossier de {nom} : ").strip().strip('"')
             if d:
                 cfg[k] = dossiers[k] = [d]
+        CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+    elif not any(dossiers.values()) and GELE and (sys.stdin is None or not sys.stdin.isatty()):  # .exe sans console
+        demander_dossiers_fenetre(cfg, dossiers)
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
     if not any(dossiers.values()):
         sys.exit('Indique tes dossiers : MediaCenter --films "D:\\Films" --series "D:\\Series" --musique "D:\\Musique"')
@@ -1797,19 +1898,33 @@ def main():
         print("ℹ Accès réseau sans code : n'importe qui sur ton Wi-Fi peut ouvrir le Media Center. Ajoute --pin 1234 pour en demander un.")
     host = "0.0.0.0" if a.reseau else "127.0.0.1"
     url = f"http://localhost:{a.port}/"
-    print(f"Ouvre {url}  (Ctrl+C pour quitter, relance pour rescanner)")
-    threading.Timer(1, webbrowser.open, [url]).start()
     try:
         serveur = ThreadingHTTPServer((host, a.port), Handler)
-    except OSError as e:
-        sys.exit(f"Port {a.port} indisponible ({e}) : le Media Center est peut-être déjà lancé.")
+    except OSError:  # déjà lancé (2e double-clic) : on ouvre simplement le navigateur dessus
+        print(f"Le Media Center tourne déjà : ouverture de {url}")
+        if not a.sans_navigateur:
+            webbrowser.open(url)
+        return
+    print(f"Ouvre {url}  (Ctrl+C ou « Quitter » près de l'horloge pour arrêter)")
+    if not a.sans_navigateur:
+        threading.Timer(1, webbrowser.open, [url]).start()
+    fil = threading.Thread(target=serveur.serve_forever, daemon=True)
+    fil.start()
     try:
-        serveur.serve_forever()
+        if not icone_barre(url):  # sans icône (Python lancé à la main) : comme avant, Ctrl+C pour quitter
+            while fil.is_alive():
+                fil.join(1)
     except KeyboardInterrupt:
         pass
 
 
 if __name__ == "__main__":
+    if sys.stdout is None or sys.stderr is None:  # .exe sans console : les messages vont dans mediacenter.log
+        journal = BASE / "mediacenter.log"
+        if journal.exists() and journal.stat().st_size > 1_000_000:
+            journal.unlink()
+        sys.stdout = sys.stderr = open(journal, "a", encoding="utf-8", buffering=1)
+        print(f"--- {time.strftime('%Y-%m-%d %H:%M')}")
     try:
         sys.stdout.reconfigure(errors="replace")  # console Windows sans emoji : pas de plantage sur « ⚠ »
     except (AttributeError, ValueError):
@@ -1817,8 +1932,7 @@ if __name__ == "__main__":
     try:
         main()
     except SystemExit as e:
-        if GELE and e.code not in (0, None):  # .exe lancé par double-clic : laisser lire le message avant fermeture
-            print(e.code)
-            input("Appuie sur Entrée pour fermer…")
+        if GELE and e.code not in (0, None):  # .exe : afficher le message avant de fermer
+            message_erreur(str(e.code))
             raise SystemExit(1)
         raise

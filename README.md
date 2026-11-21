@@ -1,16 +1,30 @@
 # Media Center
 
-Un seul fichier Python, aucune dépendance. Liste tes films et ta musique, recherche, lecture dans le navigateur (avance/retour rapide, enchaînement automatique des morceaux).
+Films, séries et musique dans le navigateur, sur le PC, la TV et le téléphone. Un seul fichier Python (ou un `.exe` Windows), sans installation.
 
-## Installation (Windows)
-1. Installer [Python 3](https://www.python.org/downloads/) (cocher « Add Python to PATH »).
-2. Télécharger ce dossier.
-3. Première fois, dans un terminal ouvert dans ce dossier :
-   ```
-   python mediacenter.py --films "D:\Films" --series "D:\Series" --musique "D:\Musique"
-   ```
-   (`--films` / `--series` / `--musique` répétables pour plusieurs dossiers ; on peut en ajouter un plus tard, les autres sont gardés.)
-4. Ensuite : double-clic sur `MediaCenter.bat`. Le navigateur s'ouvre sur http://localhost:8765.
+## Installation (Windows) — le plus simple : le .exe
+1. Télécharger `MediaCenter.exe` (onglet **Actions** du dépôt → dernière exécution → *Artifacts* → `MediaCenter-windows`), le mettre dans un dossier à lui (ex. `C:\MediaCenter`).
+2. Double-clic : au premier lancement, choisir les dossiers de films, séries et musique. Le navigateur s'ouvre sur http://localhost:8765.
+3. Le Media Center reste **près de l'horloge** (icône rouge ▶) : *Ouvrir*, *Actualiser la bibliothèque*, *Démarrer avec Windows* (lancement discret à l'ouverture de session), *Quitter*. Un nouveau double-clic ouvre simplement le navigateur. Les messages vont dans `mediacenter.log`, à côté du .exe.
+
+Windows SmartScreen peut avertir (programme non signé) : *Informations complémentaires* → *Exécuter quand même*. Options en ligne de commande : `MediaCenter.exe --reseau --pin 1234`, `--tmdb CLE`, `--demarrage-auto oui|non`, `--sans-navigateur`…
+
+**Avec Python** (sans le .exe) : `python mediacenter.py --films "D:\Films" --series "D:\Series" --musique "D:\Musique"` la première fois, puis `MediaCenter.bat`.
+
+## Accueil
+La page d'accueil montre **▶ Reprendre** (ce qui a été commencé, barre de progression), **⏭ Épisodes suivants** (l'épisode d'après le dernier vu, pour chaque série) et **🆕 Ajoutés récemment** ; un clic lance la lecture directement.
+
+## Nouveaux téléchargements
+Les dossiers sont revus **toutes les 5 minutes** : un film, un épisode ou un album téléchargé apparaît tout seul (affiche et résumé compris). Bouton **🔄** en haut pour le faire tout de suite. (Un fichier supprimé reste listé jusqu'au prochain redémarrage.)
+
+## Vidéos que le navigateur ne lit pas (AVI, HEVC/H.265…)
+Avec ffmpeg, elles sont **converties à la volée** par le PC, par morceaux de 6 secondes (HLS) : lecture immédiate, avance/retour n'importe où, sous-titres, reprise et télécommande comme pour les autres. Le PC travaille pendant la lecture (conversion H.264) : prévoir un processeur correct pour du 1080p.
+
+## Accès depuis la TV / le téléphone : code d'accès
+`--reseau` rend le Media Center accessible depuis le Wi-Fi (`http://IP-du-PC:8765`). Ajoute **`--pin 1234`** (mémorisé ; `--pin aucun` pour l'enlever) : chaque nouvel appareil demande le code une fois puis s'en souvient ; le PC lui-même n'en demande jamais. 10 codes faux → bloqué 5 minutes.
+
+## Grandes bibliothèques
+Des milliers de morceaux s'affichent sans ralentir (seules les lignes visibles sont dessinées). Les polices extraites des MKV inutilisées depuis 60 jours sont supprimées au démarrage.
 
 ## Affiches et résumés
 Au lancement, les affiches et résumés (en français) sont récupérés sur iTunes, gratuitement et sans compte, en arrière-plan : rafraîchis la page pour les voir apparaître. Comptez ~3 s par film la première fois (limite d'iTunes), ensuite tout est mémorisé dans `mediacenter_cache.json`. **Meilleure couverture avec TMDB (recommandé)** : crée un compte gratuit sur [themoviedb.org](https://www.themoviedb.org/signup), puis *Paramètres → API → Demander une clé* (usage personnel). Copie la « Clé d'API » (ou le « Jeton d'accès en lecture ») et lance une fois :
@@ -75,4 +89,4 @@ Options : `--hors-ligne` (pas de recherche internet), `--port 9000`, `--reseau` 
 Nouveaux fichiers téléchargés : relancer le programme pour rescanner.
 
 ## Limites
-Le navigateur lit nativement MP4/WebM, MP3/FLAC/OGG/M4A/WAV. Les **MKV** passent dans Chrome/Edge si la vidéo est en H.264 ; les **AVI** et certains codecs audio (DTS, AC3) ne sont pas lus — pour ceux-là, utiliser VLC, ou [Jellyfin](https://jellyfin.org) qui transcode à la volée.
+Sans ffmpeg, seules les vidéos lisibles par le navigateur passent (MP4/WebM/MKV en H.264, VP9, AV1) ; avec ffmpeg, tout est converti au besoin (vidéo à la volée, son AC3/DTS, sous-titres des MKV).
