@@ -564,10 +564,15 @@ function majFile(){fa.hidden=!file.length;fl.replaceChildren(...file.map((i,k)=>
   d.ondragover=e=>{e.preventDefault();d.classList.add('cible')};d.ondragleave=()=>d.classList.remove('cible');
   d.ondrop=e=>{e.preventDefault();d.classList.remove('cible');deplacer(glisse,k)};
   d.append(bouton('↑','Monter',()=>deplacer(k,k-1)),bouton('↓','Descendre',()=>deplacer(k,k+1)),
-   bouton('×','Retirer de la file',()=>{file.splice(k,1);majFile()}));return d}))}
+   bouton('×','Retirer de la file',()=>{file.splice(k,1);majFile()}));return d}));
+ try{localStorage.setItem('file',JSON.stringify(file.map(i=>lis[i].dataset.k)))}catch(e){}}  // sauvegarde
 if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagation();file.push(+b.closest('li').dataset.id);majFile()});
  document.querySelectorAll('.qn').forEach(b=>b.onclick=e=>{e.stopPropagation();file.unshift(+b.closest('li').dataset.id);majFile()});
- document.getElementById('fv').onclick=()=>{file=[];majFile()}}
+ document.getElementById('fv').onclick=()=>{file=[];majFile()};
+ // Restauration : par identifiant stable ; les morceaux disparus depuis sont ignorés.
+ try{const par=new Map(lis.map((l,i)=>[l.dataset.k,i]));
+  file=JSON.parse(localStorage.getItem('file')||'[]').map(k=>par.get(k)).filter(i=>i!==undefined)}catch(e){file=[]}
+ majFile()}
 function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.shift();majFile();return play(n)}
  if(alea&&al){const n=hasard();if(n>=0&&cur>=0)hist.push(cur);return play(n)}
  let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)}
@@ -598,7 +603,8 @@ def ligne_musique(i, titre, dossier, chemin, premier):
     # Une seule URL par album pour que le navigateur ne télécharge l'image qu'une fois.
     src = f"/cover/{premier.setdefault(parent, i)}" if COVERS.get(parent) else (META.get("album:" + dossier) or {}).get("affiche", "")
     img = f'<img src="{html.escape(src)}" loading="lazy" alt="">' if src else '<div class="ph">🎵</div>'
-    return (f'<li data-id="{i}" data-t="{html.escape(titre)}" data-img="{html.escape(src)}">{img}'
+    cle = html.escape(dossier + "/" + Path(chemin).name)  # identifiant stable (les numéros changent au rescan)
+    return (f'<li data-id="{i}" data-k="{cle}" data-t="{html.escape(titre)}" data-img="{html.escape(src)}">{img}'
             f'<span>{html.escape(titre)}<small>{html.escape(dossier)}</small></span>'
             f'<button class="qn" title="Lire juste après" aria-label="Lire juste après">↱</button>'
             f'<button class="qa" title="Ajouter à la file d\'attente" aria-label="Ajouter à la file d\'attente">+</button></li>')
