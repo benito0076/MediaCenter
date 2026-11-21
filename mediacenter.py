@@ -532,17 +532,20 @@ if(vid){p.textTracks.onchange=majAss;const vw=document.getElementById('vw'),
  fs=()=>document.fullscreenElement?document.exitFullscreen():vw.requestFullscreen();  // plein écran avec les sous-titres stylés
  document.getElementById('fs').onclick=fs;p.ondblclick=fs}
 lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:play(i));
-// Musique : aléatoire (chaque morceau visible une fois) et « répéter tout » (on recommence au lieu de s'arrêter).
-const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=false,joues=new Set();
-try{alea=localStorage.getItem('alea')==='1';repete=localStorage.getItem('repete')==='1'}catch(e){}
+// Musique : aléatoire (chaque morceau visible une fois) ; bouton répéter : non → tout → un seul morceau → non.
+const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=0,joues=new Set();
+try{alea=localStorage.getItem('alea')==='1';repete=Math.min(2,+localStorage.getItem('repete')||0)}catch(e){}
+const REPETE=['🔁 Répéter','🔁 Répéter tout','🔂 Répéter 1'];
+function majRepete(){rp.textContent=REPETE[repete];rp.setAttribute('aria-pressed',repete>0);p.loop=repete===2;  // boucle native
+ try{localStorage.setItem('repete',repete)}catch(e){}}
 const visibles=()=>lis.map((_,i)=>i).filter(i=>!lis[i].hidden);
 function hasard(){if(cur>=0)joues.add(cur);let v=visibles().filter(i=>!joues.has(i));
  if(!v.length){joues.clear();if(!repete)return -1;v=visibles().filter(i=>i!==cur||lis.length===1)}  // nouveau tour, sans rejouer le même
  return v.length?v[Math.floor(Math.random()*v.length)]:-1}
 function bascule(b,cle,val){b.setAttribute('aria-pressed',val);try{localStorage.setItem(cle,val?'1':'0')}catch(e){}}
-if(al){al.setAttribute('aria-pressed',alea);rp.setAttribute('aria-pressed',repete);
+if(al){al.setAttribute('aria-pressed',alea);majRepete();
  al.onclick=()=>{alea=!alea;bascule(al,'alea',alea);joues.clear();if(alea&&p.paused)play(hasard())};
- rp.onclick=()=>{repete=!repete;bascule(rp,'repete',repete)}}
+ rp.onclick=()=>{repete=(repete+1)%3;majRepete()}}
 p.onended=()=>{if('{kind}'==='films')return;if(alea&&al)return play(hasard());
  let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length&&repete&&al)n=visibles()[0];play(n)};
 q.oninput=()=>{const s=q.value.toLowerCase();lis.forEach(l=>l.hidden=!l.textContent.toLowerCase().includes(s))};
@@ -653,7 +656,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             premier = {}
             items = "".join(ligne_musique(i, t, d, c, premier) for i, (t, d, c) in enumerate(LIB[kind]))
-        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="al" aria-pressed="false">🔀 Aléatoire</button><button id="rp" aria-pressed="false">🔁 Répéter tout</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
+        player = '<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="al" aria-pressed="false">🔀 Aléatoire</button><button id="rp" aria-pressed="false">🔁 Répéter</button>' if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
