@@ -104,4 +104,12 @@ Dialogue: 0,1:02:03.00,1:02:04.00,Default,,0,0,0,,{\\k20}Ka{\\k30}ra\\hoke
 assert vers_vtt(ASS) == ("WEBVTT\n\n00:00:01.500 --> 00:00:03.000 line:0\n<i>Bonjour</i> Naruto\n\n"
                          "00:00:05.200 --> 00:00:07.000\nDeuxième, avec virgule\nNouvelle ligne\n\n"
                          "01:02:03.000 --> 01:02:04.000\nKara oke\n\n"), vers_vtt(ASS)
+
+assert mediacenter.valider_file(["A/1.mp3", "B/2.flac"]) == ["A/1.mp3", "B/2.flac"]
+for mauvais in ({"a": 1}, [1, 2], "texte", ["x" * 3000]):
+    try:
+        mediacenter.valider_file(mauvais)
+        raise AssertionError(mauvais)
+    except ValueError:
+        pass
 print("OK")

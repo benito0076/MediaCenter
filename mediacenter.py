@@ -15,6 +15,8 @@ from urllib.request import Request, urlopen
 CONFIG = Path(__file__).with_name("mediacenter.json")
 CACHE = Path(__file__).with_name("mediacenter_cache.json")
 SUIVI_F = Path(__file__).with_name("mediacenter_suivi.json")
+FILE_F = Path(__file__).with_name("mediacenter_file.json")
+FILE = []  # file d'attente musique commune à tous les appareils : ["dossier/fichier", …]
 SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
 VERROU = threading.Lock()
 EXT = {
@@ -457,6 +459,13 @@ def suivi(chemin):
     return attrs, (f'<i class="bar" style="width:{pct}%"></i>' if pct else "") + '<b class="ck" title="Vu / pas vu">✓</b>'
 
 
+def valider_file(data):
+    """Corps envoyé par le navigateur -> liste de clés de morceaux, ou ValueError."""
+    if not (isinstance(data, list) and len(data) <= 5000 and all(isinstance(k, str) and len(k) < 2000 for k in data)):
+        raise ValueError("file d'attente invalide")
+    return data
+
+
 PAGE = """<!doctype html><html lang="fr"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Media Center</title>
 <style>
@@ -554,11 +563,11 @@ if(al){al.setAttribute('aria-pressed',alea);majRepete();
  rp.onclick=()=>{repete=(repete+1)%3;majRepete()}}
 // File d'attente : les morceaux ajoutés avec « + » passent avant la suite normale (ou aléatoire).
 let file=[];const fa=document.getElementById('fa'),fl=document.getElementById('fl');
-let glisse=null;
+let glisse=null,derniere=null;
 function deplacer(a,b){if(a==null||a===b||b<0||b>=file.length)return;file.splice(b,0,file.splice(a,1)[0]);majFile()}
 function bouton(txt,titre,fn){const x=document.createElement('button');x.textContent=txt;x.title=x.ariaLabel=titre;
  x.onclick=e=>{e.stopPropagation();fn()};return x}
-function majFile(){fa.hidden=!file.length;fl.replaceChildren(...file.map((i,k)=>{const d=document.createElement('div');
+function majFile(envoyer=true){fa.hidden=!file.length;fl.replaceChildren(...file.map((i,k)=>{const d=document.createElement('div');
   d.className='fi';d.textContent=(k+1)+'. '+lis[i].dataset.t;d.onclick=()=>{file.splice(k,1);majFile();play(i)};
   // Glisser-déposer pour réorganiser ; ↑ ↓ pour le clavier et les écrans tactiles.
   d.draggable=true;d.ondragstart=e=>{glisse=k;d.classList.add('glisse');e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',k)};
@@ -567,14 +576,17 @@ function majFile(){fa.hidden=!file.length;fl.replaceChildren(...file.map((i,k)=>
   d.ondrop=e=>{e.preventDefault();d.classList.remove('cible');deplacer(glisse,k)};
   d.append(bouton('↑','Monter',()=>deplacer(k,k-1)),bouton('↓','Descendre',()=>deplacer(k,k+1)),
    bouton('×','Retirer de la file',()=>{file.splice(k,1);majFile()}));return d}));
- try{localStorage.setItem('file',JSON.stringify(file.map(i=>lis[i].dataset.k)))}catch(e){}}  // sauvegarde
+ if(envoyer){derniere=JSON.stringify(file.map(i=>lis[i].dataset.k));  // sauvegarde sur le PC, commune à tous les appareils
+  fetch('/file',{method:'POST',body:derniere,keepalive:true}).catch(()=>{})}}
 if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagation();file.push(+b.closest('li').dataset.id);majFile()});
  document.querySelectorAll('.qn').forEach(b=>b.onclick=e=>{e.stopPropagation();file.unshift(+b.closest('li').dataset.id);majFile()});
  document.getElementById('fv').onclick=()=>{file=[];majFile()};
- // Restauration : par identifiant stable ; les morceaux disparus depuis sont ignorés.
- try{const par=new Map(lis.map((l,i)=>[l.dataset.k,i]));
-  file=JSON.parse(localStorage.getItem('file')||'[]').map(k=>par.get(k)).filter(i=>i!==undefined)}catch(e){file=[]}
- majFile();
+ // File commune : relue sur le PC toutes les 5 s (identifiants stables ; morceaux disparus ignorés).
+ // ponytail: le dernier qui écrit gagne ; deux appareils modifiant la file dans la même seconde peuvent s'écraser.
+ const parK=new Map(lis.map((l,i)=>[l.dataset.k,i]));
+ async function chargerFile(){try{const ks=await (await fetch('/file')).json(),j=JSON.stringify(ks);
+  if(j===derniere||glisse!==null)return;derniere=j;file=ks.map(k=>parK.get(k)).filter(i=>i!==undefined);majFile(false)}catch(e){}}
+ chargerFile();setInterval(chargerFile,5000);
  // Reprise du morceau en cours : prêt à la bonne position, en pause (les navigateurs bloquent la lecture automatique).
  try{const e=JSON.parse(localStorage.getItem('encours')||'null'),i=e?lis.findIndex(l=>l.dataset.k===e.k):-1;
   if(i>=0){if(e.t>0)p.addEventListener('loadedmetadata',()=>{p.currentTime=e.t},{once:true});play(i,false)}}catch(e){}}
@@ -683,6 +695,8 @@ class Handler(BaseHTTPRequestHandler):
             if fmt == "ass":
                 return self.send_bytes(texte.encode(), "text/plain; charset=utf-8")
             return self.send_bytes(vers_vtt(texte).encode(), "text/vtt; charset=utf-8")
+        if url.path == "/file":
+            return self.send_bytes(json.dumps(FILE, ensure_ascii=False).encode(), "application/json")
         if url.path != "/":
             return self.send_error(404)
         qs = parse_qs(url.query)
@@ -766,6 +780,19 @@ class Handler(BaseHTTPRequestHandler):
             pass  # le navigateur a coupé (seek / pause) : normal
 
     def do_POST(self):
+        if urlparse(self.path).path == "/file":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                if n > 2_000_000:
+                    raise ValueError("trop gros")
+                nouvelle = valider_file(json.loads(self.rfile.read(n)))
+                with VERROU:
+                    FILE[:] = nouvelle
+                    FILE_F.write_text(json.dumps(FILE, ensure_ascii=False), "utf-8")
+            except ValueError:
+                return self.send_error(400)
+            self.send_response(204)
+            return self.end_headers()
         m = re.fullmatch(r"/suivi/(films|series)/(\d+)", urlparse(self.path).path)
         n = int(self.headers.get("Content-Length") or 0)
         if not m or n > 1000 or int(m[2]) >= len(LIB[m[1]]):
@@ -812,6 +839,11 @@ def main():
         META.update(json.loads(CACHE.read_text("utf-8")))
     if SUIVI_F.exists():
         SUIVI.update(json.loads(SUIVI_F.read_text("utf-8")))
+    if FILE_F.exists():
+        try:
+            FILE[:] = valider_file(json.loads(FILE_F.read_text("utf-8")))
+        except ValueError:
+            print("⚠ mediacenter_file.json illisible : file d'attente vide")
     scan(dossiers)
     print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés.")
     if not (FFMPEG and FFPROBE) and any(c.lower().endswith(".mkv") for k in ("films", "series") for _, _, c in LIB[k]):
