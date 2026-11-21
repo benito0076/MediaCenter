@@ -137,4 +137,20 @@ for mauvais in ({"cmd": "formater"}, {"cmd": "jouer"}, {"cmd": "jouer", "k": 5},
         raise AssertionError(mauvais)
     except (ValueError, KeyError):
         pass
+assert mediacenter.valider_commande({"cmd": "deplacer", "v": -10})["v"] == -10
+for mauvais in ({"cmd": "deplacer", "v": 99999}, {"cmd": "volume", "v": -10}):
+    try:
+        mediacenter.valider_commande(mauvais)
+        raise AssertionError(mauvais)
+    except ValueError:
+        pass
+v = mediacenter.valider_video({"kind": "series", "id": 3, "titre": "Lost S01E02", "t": 61.27, "d": 2580, "lecture": True,
+                               "vol": 0.5, "page": "?k=series&s=Lost", "dev": "tv"})
+assert (v["kind"], v["id"], v["t"], v["page"]) == ("series", 3, 61.3, "?k=series&s=Lost")
+for mauvais in ({**v, "kind": "musique"}, {**v, "id": -1}, {**v, "t": float("inf")}, {**v, "vol": 2}, {**v, "titre": 5}):
+    try:
+        mediacenter.valider_video(mauvais)
+        raise AssertionError(mauvais)
+    except (ValueError, TypeError):
+        pass
 print("OK")

@@ -21,7 +21,8 @@ ENCOURS_F = Path(__file__).with_name("mediacenter_encours.json")
 ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "dev", "quand"}
 COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
 RELEVE = {}  # id d'appareil -> heure du dernier relevé de commandes (= page ouverte, joignable)
-ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer", "volume"}
+ORDRES = {"lecture", "pause", "suivant", "precedent", "jouer", "volume", "deplacer"}
+VIDEO = {}  # film/épisode en cours (pour la télécommande) : {"kind", "id", "titre", "t", "d", "lecture", "vol", "page", "dev", "quand"}
 SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu": bool}
 VERROU = threading.Lock()
 EXT = {
@@ -484,9 +485,31 @@ def valider_commande(data):
     """{"cmd": ordre, "k": clé du morceau (« jouer »), "v": volume 0–1 (« volume »)} de la télécommande, ou ValueError."""
     cmd, k, v = data["cmd"], data.get("k", ""), float(data.get("v", 0))
     if (cmd not in ORDRES or not isinstance(k, str) or len(k) >= 2000 or (cmd == "jouer" and not k)
-            or not (0 <= v <= 1)):  # NaN refusé aussi
+            or not (-3600 <= v <= 3600 if cmd == "deplacer" else 0 <= v <= 1)):  # NaN refusé aussi ; deplacer : secondes
         raise ValueError("commande invalide")
     return {"cmd": cmd, "k": k, "v": v}
+
+
+def valider_video(data):
+    """État du lecteur vidéo envoyé par l'appareil qui joue un film/épisode, ou ValueError."""
+    v = {"kind": data["kind"], "id": int(data["id"]), "titre": data["titre"], "t": float(data["t"]), "d": float(data.get("d") or 0),
+         "lecture": data["lecture"], "vol": float(data.get("vol", 1)), "page": data.get("page", ""), "dev": data.get("dev", "")}
+    if not (v["kind"] in ("films", "series") and v["id"] >= 0 and isinstance(v["titre"], str) and len(v["titre"]) < 500
+            and all(math.isfinite(v[x]) and 0 <= v[x] < 1e6 for x in ("t", "d")) and isinstance(v["lecture"], bool)
+            and 0 <= v["vol"] <= 1 and all(isinstance(v[x], str) and len(v[x]) < 500 for x in ("page", "dev"))):
+        raise ValueError("état vidéo invalide")
+    return {**v, "t": round(v["t"], 1), "quand": time.time()}
+
+
+def etat_public(etat, moi):
+    """État partagé tel qu'envoyé aux appareils : âge, « c'est moi ? », joignable ; l'id des autres n'est pas divulgué."""
+    e = dict(etat)
+    if e:
+        e["age"] = round(time.time() - e.pop("quand"), 1)
+        dev = e.pop("dev", "")
+        e["moi"] = dev == moi
+        e["joignable"] = time.time() - RELEVE.get(dev, 0) < 5
+    return e
 
 
 def accepter_encours(actuel, nouveau):
@@ -522,6 +545,8 @@ ul:not(.grid) img,ul:not(.grid) .ph{width:48px;height:48px;aspect-ratio:auto;fon
 .bt{margin:8px 6px 0 0;padding:6px 12px;border:0;border-radius:6px;background:#2a2a2a;color:#aaa;cursor:pointer}
 #sv,#pv{color:#eee}
 .qn+.qa{margin-left:0}.qn,.qa,.fi button{margin-left:auto;background:none;border:0;color:#888;font-size:20px;padding:0 10px;cursor:pointer}.qn:hover,.qa:hover,.fi button:hover{color:#fff}
+#vt{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#vt label{white-space:nowrap}
+#vtv{vertical-align:middle;width:140px;accent-color:#e50914}
 #tc{margin:12px 0;padding:8px 12px;background:#2a1215;border:1px solid #e50914;border-radius:8px}#tc .bt{font-size:18px}#tc label{white-space:nowrap}#tcv{vertical-align:middle;width:140px;accent-color:#e50914}
 #fa{margin:12px 0;padding:8px 12px;background:#1b1b1b;border-radius:8px}#fa .bt{margin:0 0 0 8px;padding:2px 8px}
 .fi{display:flex;align-items:center;padding:6px 0;cursor:grab;border-top:1px solid #262626}.fi:hover{color:#fff}
@@ -542,6 +567,7 @@ const vid='{kind}'!=='musique';let last=0,proprio=false,geste=0;const APPAREIL=M
 function envoi(l,data){navigator.sendBeacon('/suivi/{kind}/'+l.dataset.id,JSON.stringify(data))}
 function save(){if(!vid){if(cur>=0&&proprio)navigator.sendBeacon('/encours',  // musique : morceau en cours, commun aux appareils
   JSON.stringify({k:lis[cur].dataset.k,t:p.currentTime||0,lecture:!p.paused,dev:APPAREIL,vol:p.volume}));return}
+ if(window.etatVideo)etatVideo();  // télécommande : position toutes les 10 s
  if(cur<0||!(p.currentTime>1))return;const l=lis[cur];envoi(l,{t:p.currentTime,d:p.duration||0});
  l.dataset.pos=p.currentTime;if(p.duration&&p.currentTime>.9*p.duration){l.classList.add('vu');l.dataset.pos=0}}
 p.ontimeupdate=()=>{if(Math.abs(p.currentTime-last)>10){last=p.currentTime;save()}};
@@ -577,8 +603,33 @@ if(vid){p.textTracks.onchange=majAss;const vw=document.getElementById('vw'),
  fs=()=>document.fullscreenElement?document.exitFullscreen():vw.requestFullscreen();  // plein écran avec les sous-titres stylés
  document.getElementById('fs').onclick=fs;p.ondblclick=fs}
 let distant=false;  // télécommande : un autre appareil joue, les clics le pilotent
-function commande(cmd,k){fetch('/commande',{method:'POST',body:JSON.stringify({cmd,k})}).catch(()=>{})}
-lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:distant?commande('jouer',l.dataset.k):play(i));
+function commande(cmd,k,pour,v){fetch('/commande'+(pour?'?pour='+pour:''),{method:'POST',body:JSON.stringify({cmd,k,v})}).catch(()=>{})}
+let vdistant=false;  // télécommande vidéo : un autre appareil joue un film/épisode de cette même page
+lis.forEach((l,i)=>l.onclick=()=>l.dataset.href?location.href=l.dataset.href:distant?commande('jouer',l.dataset.k)
+ :vdistant?commande('jouer',l.dataset.id,'video'):play(i));
+// ---- Films / séries : l'appareil qui joue publie son état et exécute les ordres ; les autres affichent la télécommande.
+if(vid){let vproprio=false,vtTouche=0,vtEnvoi=0,volV;
+ const vt=document.getElementById('vt'),vtpp=document.getElementById('vtpp'),vtv=document.getElementById('vtv'),
+  hms=s=>{s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor(s/60)%60;return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(s%60).padStart(2,'0')};
+ window.etatVideo=()=>{if(!vproprio||cur<0)return;navigator.sendBeacon('/video',JSON.stringify({kind:'{kind}',id:+lis[cur].dataset.id,
+  titre:lis[cur].dataset.t,t:p.currentTime||0,d:p.duration||0,lecture:!p.paused,vol:p.volume,page:location.search,dev:APPAREIL}))};
+ p.addEventListener('play',()=>{vproprio=true;etatVideo()});for(const ev of ['pause','seeked','loadedmetadata'])p.addEventListener(ev,()=>etatVideo());  // loadedmetadata : durée connue
+ p.addEventListener('volumechange',()=>{clearTimeout(volV);volV=setTimeout(etatVideo,300)});
+ setInterval(async()=>{if(!vproprio)return;try{for(const c of await (await fetch('/commande?dev='+APPAREIL)).json()){
+  if(c.cmd==='lecture')p.play().catch(()=>{});else if(c.cmd==='pause')p.pause();else if(c.cmd==='volume')p.volume=c.v;
+  else if(c.cmd==='deplacer')p.currentTime=Math.max(0,Math.min(p.duration||1e9,p.currentTime+c.v));
+  else if(c.cmd==='suivant')suivant();else if(c.cmd==='jouer'){const i=lis.findIndex(l=>l.dataset.id===c.k);if(i>=0)play(i)}}}catch(e){}},1000);
+ vt.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>commande('deplacer','','video',+b.dataset.v));
+ const vtsv=document.getElementById('vtsv');if(vtsv)vtsv.onclick=()=>commande('suivant','','video');
+ const envoyerVolV=()=>{vtTouche=Date.now();if(Date.now()-vtEnvoi>200){vtEnvoi=Date.now();commande('volume','','video',vtv.value/100)}};
+ vtv.oninput=envoyerVolV;vtv.onchange=()=>{vtEnvoi=0;envoyerVolV()};
+ async function suivreVideo(){try{const e=await (await fetch('/video?dev='+APPAREIL)).json();
+  const visible=!!(e.titre&&!e.moi&&e.joignable&&p.paused);vt.hidden=!visible;vdistant=visible&&e.page===location.search&&e.kind==='{kind}';
+  if(!visible)return;const t=e.t+(e.lecture&&e.age<30?e.age:0);
+  document.getElementById('vtt').textContent='Sur un autre appareil : '+e.titre+' — '+hms(Math.min(t,e.d||t))+(e.d?' / '+hms(e.d):'')+(e.lecture?'':' (pause)');
+  vtpp.textContent=e.lecture?'⏸':'▶';vtpp.onclick=()=>commande(e.lecture?'pause':'lecture','','video');
+  if(Date.now()-vtTouche>3000)vtv.value=Math.round((e.vol??1)*100)}catch(e){}}
+ suivreVideo();setInterval(suivreVideo,2000)}
 // Musique : aléatoire (chaque morceau visible une fois) ; bouton répéter : non → tout → un seul morceau → non.
 const al=document.getElementById('al'),rp=document.getElementById('rp');let alea=false,repete=0,joues=new Set(),hist=[];  // hist : morceaux joués en aléatoire, pour « précédent »
 try{alea=localStorage.getItem('alea')==='1';repete=Math.min(2,+localStorage.getItem('repete')||0)}catch(e){}
@@ -760,13 +811,8 @@ class Handler(BaseHTTPRequestHandler):
                 RELEVE[dev] = time.time()
                 liste = COMMANDES.pop(dev, [])
             return self.send_bytes(json.dumps(liste, ensure_ascii=False).encode(), "application/json")
-        if url.path == "/encours":
-            e, moi = dict(ENCOURS), parse_qs(url.query).get("dev", [""])[0]
-            if e:
-                e["age"] = round(time.time() - e.pop("quand"), 1)
-                dev = e.pop("dev", "")
-                e["moi"] = dev == moi  # l'id des autres appareils n'est pas divulgué
-                e["joignable"] = time.time() - RELEVE.get(dev, 0) < 5
+        if url.path in ("/encours", "/video"):
+            e = etat_public(ENCOURS if url.path == "/encours" else VIDEO, parse_qs(url.query).get("dev", [""])[0])
             return self.send_bytes(json.dumps(e, ensure_ascii=False).encode(), "application/json")
         if url.path != "/":
             return self.send_error(404)
@@ -791,7 +837,11 @@ class Handler(BaseHTTPRequestHandler):
                   '<button class="bt" id="tcpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-c="suivant" aria-label="Suivant (à distance)">⏭</button>'
                   ' <label>🔊 <input id="tcv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label></div>'
                   '<div id="fa" hidden><b>À suivre</b> <button id="fv" class="bt">Vider la file</button><div id="fl"></div></div>') if kind == "musique" else ('<div id="vw"><video id="p" controls controlslist="nofullscreen"></video>'
-                                                                                         '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>')
+                                                                                         '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>'
+            '<div id="vt" hidden>🎛 <span id="vtt"></span><br><button class="bt" data-v="-10" aria-label="Reculer de 10 secondes">⏪ 10 s</button>'
+            '<button class="bt" id="vtpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-v="30" aria-label="Avancer de 30 secondes">30 s ⏩</button>'
+            + ('<button class="bt" id="vtsv" aria-label="Épisode suivant (à distance)">⏭ Épisode suivant</button>' if kind == "series" else "")
+            + ' <label>🔊 <input id="vtv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label></div>')
         body = PAGE
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
             n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
@@ -854,6 +904,20 @@ class Handler(BaseHTTPRequestHandler):
             pass  # le navigateur a coupé (seek / pause) : normal
 
     def do_POST(self):
+        if urlparse(self.path).path == "/video":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                if n > 5000:
+                    raise ValueError("trop gros")
+                nouveau = valider_video(json.loads(self.rfile.read(n)))
+            except (ValueError, KeyError, TypeError):
+                return self.send_error(400)
+            with VERROU:
+                if accepter_encours(VIDEO, nouveau):  # même règle de passage de relais que la musique
+                    VIDEO.clear()
+                    VIDEO.update(nouveau)
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/commande":
             n = int(self.headers.get("Content-Length") or 0)
             try:
@@ -863,7 +927,8 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, KeyError, TypeError, AttributeError):
                 return self.send_error(400)
             with VERROU:
-                cible = ENCOURS.get("dev")
+                pour_video = parse_qs(urlparse(self.path).query).get("pour", [""])[0] == "video"
+                cible = (VIDEO if pour_video else ENCOURS).get("dev")
                 if not cible or time.time() - RELEVE.get(cible, 0) > 5:
                     return self.send_error(409)  # personne ne joue (ou page fermée)
                 COMMANDES.setdefault(cible, []).append(c)
