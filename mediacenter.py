@@ -98,7 +98,9 @@ ES = {
     "Morceau précédent (ou début du morceau)": "Canción anterior (o inicio de la canción)", "Morceau suivant": "Canción siguiente",
     "Précédent (à distance)": "Anterior (a distancia)", "Lecture / pause (à distance)": "Reproducir / pausa (a distancia)",
     "Suivant (à distance)": "Siguiente (a distancia)", "Volume (à distance)": "Volumen (a distancia)", "À suivre": "A continuación",
-    "Vider la file": "Vaciar la cola", "Listes de lecture": "Listas de reproducción", "Mettre dans la file": "Poner en la cola",
+    "Vider la file": "Vaciar la cola", "💬 Chercher des sous-titres": "💬 Buscar subtítulos", "Recherche…": "Buscando…",
+    "Aucun sous-titre trouvé.": "No se encontró ningún subtítulo.", "Quota du jour atteint sur OpenSubtitles.": "Cuota diaria de OpenSubtitles alcanzada.",
+    "OpenSubtitles ne répond pas.": "OpenSubtitles no responde.", "Listes de lecture": "Listas de reproducción", "Mettre dans la file": "Poner en la cola",
     "Enregistrer la file": "Guardar la cola", "Supprimer la liste": "Borrar la lista", "Nom de la liste ?": "¿Nombre de la lista?",
     "Choisis d'abord une liste.": "Elige primero una lista.", "La file est vide.": "La cola está vacía.", "Plein écran (double-clic)": "Pantalla completa (doble clic)",
     "Piste audio (à distance)": "Pista de audio (a distancia)", '"Piste audio"': '"Pista de audio"',
@@ -150,7 +152,9 @@ MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus
            "Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.":
                "Un perfil infantil solo ve películas y series de Animación, Familia o Infantil (según TMDB/iTunes); hace falta el código parental para salir.",
            "Code parental incorrect": "Código parental incorrecto", "Il faut un code parental de 4 caractères ou plus": "Hace falta un código parental de 4 caracteres o más",
-           "Code parental :": "Código parental:", "Changer de profil…": "Cambiar de perfil…", "Séries": "Series", "Musique": "Música"}
+           "Code parental :": "Código parental:", "Clé API": "Clave API", "Utilisateur": "Usuario", "Mot de passe": "Contraseña",
+           "Pour le bouton « Chercher des sous-titres » : clé API gratuite sur opensubtitles.com (compte facultatif, plus de téléchargements par jour).":
+               "Para el botón «Buscar subtítulos»: clave API gratuita en opensubtitles.com (cuenta opcional, más descargas al día).", "Changer de profil…": "Cambiar de perfil…", "Séries": "Series", "Musique": "Música"}
 _MOTIF_ES = re.compile("|".join(re.escape(k) for k in sorted(ES, key=len, reverse=True)))
 
 
@@ -933,6 +937,65 @@ def installer(outil):
 # --- Mises à jour : le .exe connaît son numéro (fabrication GitHub) ; une fois par jour, il regarde la dernière
 # version publiée (Releases) et propose de se mettre à jour. Lancé avec Python (VERSION = 0) : rien à faire ici.
 VERSION = int((RESSOURCES / "version.txt").read_text().strip() or 0) if (RESSOURCES / "version.txt").exists() else 0
+# OpenSubtitles (clé API gratuite sur opensubtitles.com ; compte facultatif mais conseillé : plus de téléchargements par jour).
+OSUB_URL = os.environ.get("MEDIACENTER_OSUB_URL", "https://api.opensubtitles.com/api/v1")
+OSUB_JETON = {}
+
+
+def hash_osub(chemin):
+    """Empreinte OpenSubtitles : taille + somme des mots de 64 bits des premiers et derniers 64 Ko."""
+    taille = os.path.getsize(chemin)
+    h = taille
+    with open(chemin, "rb") as f:
+        for pos in (0, max(0, taille - 65536)):
+            f.seek(pos)
+            bloc = f.read(65536)
+            bloc += b"\0" * (-len(bloc) % 8)
+            h += sum(int.from_bytes(bloc[k:k + 8], "little") for k in range(0, len(bloc), 8))
+    return f"{h & 0xFFFFFFFFFFFFFFFF:016x}"
+
+
+def appel_osub(chemin, donnees=None, jeton=None):
+    ent = {"Api-Key": CFG["opensubtitles"], "User-Agent": f"MediaCenter v{VERSION}", "Accept": "application/json",
+           "Content-Type": "application/json"}
+    if jeton:
+        ent["Authorization"] = "Bearer " + jeton
+    req = Request(OSUB_URL + chemin, json.dumps(donnees).encode() if donnees is not None else None, ent)
+    with urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+def chercher_sous_titres(kind, i):
+    """Télécharge le meilleur sous-titre dans la langue de l'interface, l'enregistre à côté de la vidéo ; renvoie son nom."""
+    titre, dossier, chemin = LIB[kind][i]
+    langue = LANGUE[0]
+    params = {"languages": langue, "moviehash": hash_osub(chemin)}
+    if kind == "films":
+        params["query"] = (META.get(Path(chemin).name) or {}).get("titre") or titre
+    else:
+        params["query"] = dossier
+        m = EP.search(titre)
+        if m:
+            params.update(season_number=int(m[1] or m[3]), episode_number=int(m[2] or m[4]))
+    res = [r["attributes"] for r in appel_osub("/subtitles?" + urlencode(sorted(params.items()))).get("data", [])
+           if r.get("attributes", {}).get("files")]
+    if not res:
+        raise LookupError("aucun sous-titre trouvé")
+    meilleur = max(res, key=lambda a: (bool(a.get("moviehash_match")), a.get("download_count", 0)))  # même fichier d'abord
+    if CFG.get("opensubtitles_utilisateur") and not OSUB_JETON.get("t"):
+        OSUB_JETON["t"] = appel_osub("/login", {"username": CFG["opensubtitles_utilisateur"],
+                                                "password": CFG.get("opensubtitles_mdp", "")})["token"]
+    lien = appel_osub("/download", {"file_id": meilleur["files"][0]["file_id"]}, OSUB_JETON.get("t"))["link"]
+    with urlopen(Request(lien, headers={"User-Agent": f"MediaCenter v{VERSION}"}), timeout=30) as r:
+        texte = r.read(5 * 1024 ** 2)
+    dest = Path(chemin).with_name(f"{Path(chemin).stem}.{langue}.opensubtitles.srt")
+    dest.write_bytes(texte)
+    with VERROU:
+        if str(dest) not in SUBS.setdefault(chemin, []):
+            SUBS[chemin].append(str(dest))
+    return nom_sous_titre(dest, chemin)
+
+
 URL_MAJ = os.environ.get("MEDIACENTER_MAJ_URL", "https://api.github.com/repos/benito0076/MediaCenter/releases/latest")
 MAJ = {}  # {"version", "page", "exe"} si une version plus récente existe ; "etat" pendant la mise à jour
 
@@ -1048,6 +1111,7 @@ def diagnostic(complet=True):
             L.append(("✅" if r == "ok" else "⚠️", tr("Mises à jour (GitHub)"), tr("joignable") if r == "ok" else f'{tr("injoignable")} ({r})'))
     L.append(("✅" if RESEAU[0] else "ℹ️", tr("Réseau"), f"http://{ip_lan()}:{PORT[0]}" if RESEAU[0] else tr("seulement ce PC (lancer avec --reseau pour la TV et le téléphone)")))
     L.append(("✅" if ACCES["jeton"] else ("⚠️" if RESEAU[0] else "ℹ️"), tr("Code d'accès"), tr("activé") if ACCES["jeton"] else tr("aucun")))
+    L.append(("✅" if CFG.get("opensubtitles") else "ℹ️", "OpenSubtitles", tr("activé") if CFG.get("opensubtitles") else tr("aucun")))
     L.append(("ℹ️", tr("Cache audio"), f"{taille_cache_audio() / 1e6:.0f} Mo / {CACHE_AUDIO_MAX[0] / 1e9:.0f} Go"))
     return L
 
@@ -1061,7 +1125,18 @@ def html_diagnostic(sur_le_pc):
         """<script>imp.onchange=async()=>{const r=await fetch('/restaurer',{method:'POST',body:imp.files[0]});"""
         f"""imp_etat.textContent=r.ok?'{tr("Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.")}'"""
         f""":'{tr("Fichier refusé")} ('+r.status+')'}}</script>""")
-    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_parental() if sur_le_pc else ""}'
+    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_parental() + html_osub() if sur_le_pc else ""}'
+
+
+def html_osub():
+    v = lambda k: html.escape(CFG.get(k, ""))
+    return (f'<h3>💬 OpenSubtitles</h3><p>{tr("Pour le bouton « Chercher des sous-titres » : clé API gratuite sur opensubtitles.com (compte facultatif, plus de téléchargements par jour).")}</p>'
+            f'<form id="os"><input id="os_cle" placeholder="{tr("Clé API")}" value="{v("opensubtitles")}" autocomplete="off"> '
+            f'<input id="os_u" placeholder="{tr("Utilisateur")}" value="{v("opensubtitles_utilisateur")}" autocomplete="off"> '
+            f'<input id="os_m" type="password" placeholder="{tr("Mot de passe")}" autocomplete="new-password"> '
+            f'<button class="bt">{tr("Enregistrer")}</button> <small id="os_etat"></small></form>'
+            """<script>os.onsubmit=async e=>{e.preventDefault();const r=await fetch('/opensubtitles',{method:'POST',"""
+            """body:JSON.stringify({cle:os_cle.value,utilisateur:os_u.value,mdp:os_m.value})});os_etat.textContent=r.ok?'✔':'✖ '+r.status}</script>""")
 
 
 def html_parental():
@@ -1902,7 +1977,7 @@ class Handler(BaseHTTPRequestHandler):
                                                                                          '<button id="fs" title="Plein écran (double-clic)">⛶</button></div>'
             '<label id="pal" hidden>🔈 Audio <select id="pas" aria-label="Piste audio"></select> <span id="pae"></span></label>'
             '<button id="amp" class="bt" hidden>🔊 Lire sur l’ampli (passthrough)</button>'
-            '<button id="cast" class="bt" hidden>📺 Chromecast</button>'
+            '<button id="cast" class="bt" hidden>📺 Chromecast</button><button id="osub" class="bt" hidden>💬 Chercher des sous-titres</button>'
             '<div id="vt" hidden>🎛 <span id="vtt"></span><br><button class="bt" data-v="-10" aria-label="Reculer de 10 secondes">⏪ 10 s</button>'
             '<button class="bt" id="vtpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-v="30" aria-label="Avancer de 30 secondes">30 s ⏩</button>'
             + ('<button class="bt" id="vtsv" aria-label="Épisode suivant (à distance)">⏭ Épisode suivant</button>' if kind == "series" else "")
@@ -1922,7 +1997,8 @@ class Handler(BaseHTTPRequestHandler):
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
         body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
                 .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)
-                .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "").replace("{cast}", "1" if RESEAU[0] else "").replace("{ffmpeg}", "1" if FFMPEG and FFPROBE else "")).encode()
+                .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "").replace("{cast}", "1" if RESEAU[0] else "").replace("{ffmpeg}", "1" if FFMPEG and FFPROBE else "")
+                .replace("{osub}", "1" if CFG.get("opensubtitles") else "")).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -2136,6 +2212,44 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             except OSError as e:
                 return self.send_error(500, str(e))
             return self.send_bytes(json.dumps({"nouveaux": n}).encode(), "application/json")
+        m = re.fullmatch(r"/soustitres-en-ligne/(films|series)/(\d+)", urlparse(self.path).path)
+        if m:  # bouton « 💬 Chercher des sous-titres »
+            kind, i = m[1], int(m[2])
+            if i >= len(LIB[kind]) or not permis(kind, i):
+                return self.send_error(404)
+            if not CFG.get("opensubtitles"):
+                return self.send_error(503, "pas de clé OpenSubtitles")
+            try:
+                nom = chercher_sous_titres(kind, i)
+            except LookupError:
+                return self.send_error(404)
+            except HTTPError as e:
+                OSUB_JETON.clear()
+                print(f"⚠ OpenSubtitles : HTTP {e.code}")
+                return self.send_error(502 if e.code != 406 else 429)  # 406 : quota du jour dépassé
+            except (OSError, ValueError, KeyError) as e:
+                print(f"⚠ OpenSubtitles : {e}")
+                return self.send_error(502)
+            return self.send_bytes(json.dumps({"nom": nom}, ensure_ascii=False).encode(), "application/json")
+        if urlparse(self.path).path == "/opensubtitles":  # réglages (page diagnostic)
+            n = int(self.headers.get("Content-Length") or 0)
+            if not self.admin():
+                return self.send_error(403)
+            try:
+                d = json.loads(self.rfile.read(min(n, 2000)))
+                nouveau = {"opensubtitles": str(d["cle"]).strip(), "opensubtitles_utilisateur": str(d.get("utilisateur", "")).strip()}
+                if d.get("mdp"):
+                    nouveau["opensubtitles_mdp"] = str(d["mdp"])
+            except (ValueError, KeyError, TypeError, AttributeError):
+                return self.send_error(400)
+            with VERROU:
+                cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+                cfg.update(nouveau)
+                CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+                CFG.update(nouveau)
+                OSUB_JETON.clear()
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/parental":  # réglages du contrôle parental (page diagnostic)
             n = int(self.headers.get("Content-Length") or 0)
             if not self.admin():

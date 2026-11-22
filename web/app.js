@@ -32,13 +32,21 @@ function play(i,auto=true){if(i<0||i>=lis.length)return;save();lis.forEach(l=>l.
  const pret=source(l,auto);
  p.querySelectorAll('track').forEach(t=>t.remove());
  assOff();if(window.audioReset)pret.then(()=>audioReset(l));{const a=document.getElementById('amp');if(a)a.hidden=!AMPLI}
- if(vid)fetch('/pistes/{kind}/'+l.dataset.id).then(r=>r.json()).then(st=>{if(lis[cur]!==l)return;  // déjà passé à une autre vidéo
-  const choix=Math.max(0,st.findIndex(s=>/fr|vf/i.test(s.nom)));  // français de préférence
-  st.forEach((s,n)=>{const t=document.createElement('track');
-   Object.assign(t,{kind:'subtitles',label:s.nom,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});
-   if(s.ass)t.dataset.ass='/ass/{kind}/'+l.dataset.id+'/'+n;p.appendChild(t)});setTimeout(majAss,300)});
+ if(vid)pistesST(l);
  document.title=dt.textContent=l.dataset.t;dr.textContent=l.dataset.r||'';
  const pc=document.getElementById('pc');if(pc){pc.src=l.dataset.img||'';pc.hidden=!l.dataset.img}window.scrollTo(0,0)}
+function pistesST(l,choisir){p.querySelectorAll('track').forEach(t=>t.remove());
+ fetch('/pistes/{kind}/'+l.dataset.id).then(r=>r.json()).then(st=>{if(lis[cur]!==l)return;  // déjà passé à une autre vidéo
+  const choix=choisir!=null?st.findIndex(s=>s.nom===choisir):Math.max(0,st.findIndex(s=>/fr|vf/i.test(s.nom)));  // français de préférence
+  st.forEach((s,n)=>{const t=document.createElement('track');
+   Object.assign(t,{kind:'subtitles',label:s.nom,default:n===choix,src:'/sub/{kind}/'+l.dataset.id+'/'+n});
+   if(s.ass)t.dataset.ass='/ass/{kind}/'+l.dataset.id+'/'+n;p.appendChild(t);});
+  setTimeout(()=>{if(choisir!=null)p.querySelectorAll('track').forEach((t,j)=>t.track.mode=j===choix?'showing':'disabled');majAss()},300)})}  // après la sélection automatique du navigateur
+// Sous-titres en ligne (OpenSubtitles) : téléchargés sur le PC à côté de la vidéo, puis ajoutés à la liste.
+{const b=document.getElementById('osub');if(vid&&b&&'{osub}'){b.hidden=false;b.onclick=async()=>{if(cur<0)return;const l=lis[cur],txt=b.textContent;
+ b.disabled=true;b.textContent='⏳ Recherche…';try{const r=await fetch('/soustitres-en-ligne/{kind}/'+l.dataset.id,{method:'POST'});
+  if(r.ok)pistesST(l,(await r.json()).nom);else alert(r.status==404?'Aucun sous-titre trouvé.':r.status==429?'Quota du jour atteint sur OpenSubtitles.':'OpenSubtitles ne répond pas.')}
+ catch(e){alert('OpenSubtitles ne répond pas.')}b.disabled=false;b.textContent=txt}}}
 document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'POST'});location.reload()};
 document.getElementById('rs').onclick=async e=>{const b=e.currentTarget;b.disabled=true;b.textContent='⏳';
  try{const r=await (await fetch('/rescan',{method:'POST'})).json();if(r.nouveaux)location.reload();else{b.textContent='✓';setTimeout(()=>{b.textContent='🔄';b.disabled=false},1500)}}

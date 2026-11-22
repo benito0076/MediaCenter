@@ -20,6 +20,15 @@ Sur un navigateur de TV ou au clavier : **flèches** pour aller d'une affiche / 
 ## Profils
 Menu **👤** en haut : chaque personne a son « déjà vu », sa reprise et son accueil (*➕ Nouveau profil*). Chaque navigateur retient son profil ; la musique, la file d'attente et la télécommande restent communes.
 
+### Contrôle parental
+Page **🩺 Diagnostic** (sur le PC) → *Contrôle parental* : coche les profils enfant et choisis un **code parental**. Un profil enfant ne voit que les films et séries dont la fiche TMDB/iTunes a le genre *Animation*, *Familial* ou *Enfants* (sans fiche = caché) ; la musique reste visible. Le serveur refuse aussi les vidéos interdites (lecture, Chromecast, télécommande, ampli). Un appareil passé sur un profil enfant y reste : *🔓 Changer de profil…* demande le code parental. Depuis un profil enfant, les réglages du PC (sauvegarde, mises à jour…) sont bloqués. Limite : effacer les cookies du navigateur enlève le verrou de cet appareil.
+
+## Application sur le téléphone
+Ouvre le Media Center dans le navigateur du téléphone, puis *Ajouter à l'écran d'accueil* (Chrome : menu ⋮ ; iPhone : bouton Partager) : une icône ▶ lance le Media Center comme une appli. Sur Android, sans HTTPS, il peut s'ouvrir dans un onglet plutôt qu'en plein écran.
+
+## Sauvegarde
+Page **🩺 Diagnostic** (sur le PC) → *Exporter* : un `.zip` avec réglages, profils, « déjà vu », reprises, file d'attente, listes de lecture et affiches. *Importer* le remet en place (par exemple sur un nouveau PC) ; redémarre ensuite si les dossiers ou le code ont changé.
+
 ## Trier et filtrer
 Films et Séries : **Trier** (titre, ajoutés récemment, année), **Genre** (d'après TMDB / iTunes) et **Non vus**. Les choix sont gardés par navigateur.
 
@@ -88,6 +97,8 @@ winget install ffmpeg
 ```
 Les pistes texte (SRT, ASS, …) apparaissent alors dans le menu sous-titres (« Français », « Anglais – SDH »…). Elles mettent quelques secondes à s'afficher la première fois (ffmpeg lit le fichier). Les sous-titres en image (PGS des Blu-ray, VobSub des DVD) ne peuvent pas être affichés par le navigateur.
 
+**Télécharger des sous-titres (OpenSubtitles)** : crée une clé API gratuite sur [opensubtitles.com](https://www.opensubtitles.com/consumers) (un compte est conseillé : plus de téléchargements par jour), et entre-la sur la page **🩺 Diagnostic** → *OpenSubtitles*. Le bouton **💬 Chercher des sous-titres** sous la vidéo trouve le meilleur sous-titre dans la langue de l'interface (d'abord ceux faits pour ce fichier exact), l'enregistre à côté de la vidéo (`Film.es.opensubtitles.srt`) et l'active.
+
 ## Lecture aléatoire et répéter tout (musique)
 Bouton **⏮ Précédent** : si le morceau joue depuis plus de 3 s, il revient à son début ; sinon il passe au morceau d'avant (en aléatoire : celui joué juste avant). Bouton **⏭ Suivant** (les deux marchent aussi avec les touches ⏮ ⏭ du clavier ou du casque) : passe au morceau suivant en respectant l'aléatoire et « Répéter tout » ; en « Répéter 1 », il passe quand même au suivant, qui tourne alors en boucle. Bouton **🔀 Aléatoire** : chaque morceau est joué une fois dans un ordre au hasard, puis la lecture s'arrête. Bouton **🔁 Répéter**, à chaque clic : *Répéter tout* (à la fin de la liste, on recommence au début ; en aléatoire, nouveau tirage sans rejouer tout de suite le même morceau) → *🔂 Répéter 1* (le morceau en cours tourne en boucle) → désactivé. Les deux respectent la recherche (tape un artiste ou un album pour ne jouer que celui-ci) et restent activés au prochain lancement.
 
@@ -102,6 +113,8 @@ Même principe sur les onglets Films et Séries : quand la TV (ou le PC) joue un
 
 ### File d'attente
 Le **+** au bout de chaque morceau l'ajoute à la fin de la file **À suivre** (affichée sous les boutons) ; le **↱** le place en tête (« lire juste après » : il passera dès la fin du morceau en cours). Ces morceaux passent avant la suite normale ou aléatoire, dans l'ordre d'ajout, même s'ils sont masqués par la recherche. Pour changer l'ordre, **glisse-dépose** un morceau sur un autre, ou utilise **↑ ↓** (clavier, écran tactile). Clic sur un morceau de la file : il joue tout de suite ; **×** le retire ; **Vider la file** efface tout. La file est **commune à tous les appareils** (PC, TV, téléphone en mode `--reseau`) et enregistrée sur le PC (`mediacenter_file.json`) : ajoute un morceau depuis le téléphone, il apparaît sur le PC en 5 secondes au plus. Elle survit au rechargement et au redémarrage du Media Center (même si de nouveaux morceaux ont été ajoutés ; ceux supprimés entre-temps sont simplement retirés). Si deux appareils modifient la file dans la même seconde, la dernière modification l'emporte.
+
+**Listes de lecture** : *Enregistrer la file* garde la file en cours sous un nom ; choisis une liste puis *Mettre dans la file* pour la rejouer, *Supprimer la liste* pour l'effacer. Les listes sont communes à tous les appareils (`mediacenter_listes.json`).
 
 ## Pochettes d'albums
 Pour chaque dossier d'album, le Media Center utilise l'image présente dans le dossier (`cover.jpg`, `folder.jpg`, `front.png`… sinon la première image trouvée). À défaut, il prend la pochette intégrée aux fichiers (MP3, FLAC, M4A). S'il n'y en a toujours pas, il cherche la pochette sur iTunes d'après le nom du dossier (`Artiste - Album` ou `Artiste/Album`), en arrière-plan, et la mémorise dans `mediacenter_cache.json`.

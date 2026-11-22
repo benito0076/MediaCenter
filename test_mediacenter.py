@@ -432,4 +432,15 @@ assert m.ordre("films") == [1, 2, 0]
 m.charger_parental(m.regler_parental({"enfants": [], "pin": "", "ancien": "4242"}))
 assert not m.ENFANTS
 m.LIB.update(_lib); m.PROFILS.clear(); m.charger_parental({})
+# Empreinte OpenSubtitles : comparée à un calcul indépendant (struct, mots de 64 bits)
+import struct as _st
+def _ref(f):
+    d = open(f, "rb").read(); h = len(d)
+    for b in (d[:65536], d[-65536:] if len(d) > 65536 else d):
+        b += b"\0" * (-len(b) % 8); h += sum(_st.unpack("<%dQ" % (len(b) // 8), b))
+    return "%016x" % (h & 0xFFFFFFFFFFFFFFFF)
+with tempfile.TemporaryDirectory() as dd:
+    for taille in (200_000, 1000):
+        f = os.path.join(dd, "v.mkv"); open(f, "wb").write(os.urandom(taille))
+        assert m.hash_osub(f) == _ref(f)
 print("OK")
