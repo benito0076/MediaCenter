@@ -1046,7 +1046,7 @@ def verifier_maj():
 def surveiller_maj():
     while True:
         verifier_maj()
-        time.sleep(86400)
+        time.sleep(6 * 3600)
 
 
 def appliquer_maj():
@@ -1103,6 +1103,8 @@ def tester_url(url, entetes=None):
 
 def diagnostic(complet=True):
     """[(état, sujet, détail)] : ✅ bon, ⚠ à voir, ❌ problème. complet : tests réseau (internet) compris."""
+    if complet:
+        verifier_maj()  # nouvelle version publiée depuis le lancement : visible tout de suite
     L = [("✅" if VERSION else "ℹ️", tr("Version"), f"build {VERSION}" if VERSION else tr("lancé avec Python (pas de mise à jour automatique)"))]
     if VERSION and MAJ.get("version"):
         L.append(("⚠️", tr("Mise à jour"), f'{tr("version disponible")} : build {MAJ["version"]}'))
@@ -1158,7 +1160,7 @@ def html_diagnostic(sur_le_pc):
         """<script>imp.onchange=async()=>{const r=await fetch('/restaurer',{method:'POST',body:imp.files[0]});"""
         f"""imp_etat.textContent=r.ok?'{tr("Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.")}'"""
         f""":'{tr("Fichier refusé")} ('+r.status+')'}}</script>""")
-    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_dossiers() + html_tmdb() + html_parental() + html_osub() if sur_le_pc else ""}'
+    return f'{bandeau_maj() if sur_le_pc else ""}<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_dossiers() + html_tmdb() + html_parental() + html_osub() if sur_le_pc else ""}'
 
 
 def html_dossiers():
