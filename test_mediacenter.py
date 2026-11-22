@@ -410,4 +410,26 @@ for mauvais in ("", " ", "x" * 51, "<b>", None, 3):
         m.valider_nom_liste(mauvais); assert False
     except ValueError:
         pass
+# Contrôle parental : profil enfant filtré, code exigé pour changer les réglages
+_lib = {k: list(v) for k, v in m.LIB.items()}
+m.LIB["films"][:] = [("Nemo", "", "/x/nemo.mkv"), ("Alien", "", "/x/alien.mkv"), ("Inconnu", "", "/x/inconnu.mkv")]
+m.META.update({"nemo.mkv": {"genres": ["Animation"]}, "alien.mkv": {"genres": ["Horreur"]}})
+m.PROFILS[:] = ["Léo"]
+try:
+    m.regler_parental({"enfants": ["Léo"], "pin": ""}); assert False  # pas de code : refusé
+except ValueError:
+    pass
+r = m.regler_parental({"enfants": ["Léo"], "pin": "4242"}); m.charger_parental(r)
+assert m.ENFANTS == {"Léo"}
+try:
+    m.regler_parental({"enfants": [], "pin": "", "ancien": "0000"}); assert False
+except PermissionError:
+    pass
+m.ACTUEL.profil = "Léo"
+assert m.ordre("films") == [0] and not m.permis("films", 1) and m.permis("musique", 0)
+m.ACTUEL.profil = ""
+assert m.ordre("films") == [1, 2, 0]
+m.charger_parental(m.regler_parental({"enfants": [], "pin": "", "ancien": "4242"}))
+assert not m.ENFANTS
+m.LIB.update(_lib); m.PROFILS.clear(); m.charger_parental({})
 print("OK")

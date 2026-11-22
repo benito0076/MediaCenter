@@ -34,6 +34,9 @@ SUIVI = {}  # nom de fichier vidéo -> {"t": position (s), "d": durée (s), "vu"
 # Profils : chacun son « déjà vu », sa reprise et son accueil (fichier mediacenter_suivi_<…>.json) ; choisi par cookie.
 PROFILS = []  # noms des profils en plus de « Principal »
 SUIVIS = {"": SUIVI}
+ENFANTS = set()  # profils enfant (contrôle parental)
+PARENTAL = {"jeton": None, "sel": ""}  # code parental (haché) : pour quitter un profil enfant ou changer ces réglages
+GENRES_ENFANTS = {"Animation", "Familial", "Enfants", "Kids & Family"}  # TMDB (fr) et iTunes
 ACTUEL = threading.local()  # profil de la requête en cours
 VERROU = threading.Lock()
 EXT = {
@@ -141,7 +144,13 @@ MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus
            "Diagnostic": "Diagnóstico", "Version": "Versión", "Dossier": "Carpeta", "fichiers": "archivos", "introuvable": "no encontrada", "Dossiers": "Carpetas", "Affiches": "Pósters", "injoignable": "inaccesible", "joignable": "accesible", "Réseau": "Red", "activé": "activado", "aucun": "ninguno", "Films": "Películas", "Sauvegarde": "Copia de seguridad", "Exporter": "Exportar", "Importer": "Importar",
            "Réglages, profils, « déjà vu », reprises, file d'attente, listes et affiches.": "Ajustes, perfiles, «visto», progreso, cola, listas y pósters.",
            "Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.": "Restaurado. Reinicia el Media Center si cambiaste carpetas o el código.",
-           "Fichier refusé": "Archivo rechazado", "Séries": "Series", "Musique": "Música"}
+           "Fichier refusé": "Archivo rechazado",
+           "Crée d'abord un profil (👤 en haut).": "Crea primero un perfil (👤 arriba).", "Code parental actuel": "Código parental actual",
+           "Contrôle parental": "Control parental", "Nouveau code parental": "Nuevo código parental", "Enregistrer": "Guardar",
+           "Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.":
+               "Un perfil infantil solo ve películas y series de Animación, Familia o Infantil (según TMDB/iTunes); hace falta el código parental para salir.",
+           "Code parental incorrect": "Código parental incorrecto", "Il faut un code parental de 4 caractères ou plus": "Hace falta un código parental de 4 caracteres o más",
+           "Code parental :": "Código parental:", "Changer de profil…": "Cambiar de perfil…", "Séries": "Series", "Musique": "Música"}
 _MOTIF_ES = re.compile("|".join(re.escape(k) for k in sorted(ES, key=len, reverse=True)))
 
 
@@ -425,6 +434,33 @@ def jeton_pin(pin, sel):
     return hashlib.sha256(f"{sel}|{pin}".encode()).hexdigest()[:32]
 
 
+def jeton_verrou(profil):
+    return hmac.new((PARENTAL["jeton"] or "").encode(), b"enfant|" + profil.encode(), "sha256").hexdigest()[:32]
+
+
+def charger_parental(cfg):
+    PARENTAL.update(jeton=cfg.get("parental") or None, sel=cfg.get("sel_parental", ""))
+    ENFANTS.clear()
+    if PARENTAL["jeton"]:  # sans code parental, pas de profil enfant (on ne pourrait plus en sortir)
+        ENFANTS.update(p for p in cfg.get("enfants", []) if p in PROFILS)
+
+
+def regler_parental(data):
+    """{"enfants": [...], "pin": nouveau code ou "", "ancien": code actuel} -> réglages à écrire, ou ValueError."""
+    enfants, pin, ancien = data.get("enfants", []), str(data.get("pin", "")), str(data.get("ancien", ""))
+    if PARENTAL["jeton"] and not hmac.compare_digest(jeton_pin(ancien, PARENTAL["sel"]), PARENTAL["jeton"]):
+        raise PermissionError("code parental incorrect")
+    if not isinstance(enfants, list) or any(p not in PROFILS for p in enfants) or (pin and not 4 <= len(pin) <= 20):
+        raise ValueError("réglages invalides")
+    jeton, sel = PARENTAL["jeton"], PARENTAL["sel"]
+    if pin:
+        sel = __import__("secrets").token_hex(8)
+        jeton = jeton_pin(pin, sel)
+    if enfants and not jeton:
+        raise ValueError("choisis un code parental")
+    return {"enfants": enfants, "parental": jeton, "sel_parental": sel}
+
+
 def trop_d_essais(ip, maintenant=None):
     """Après 10 PIN faux en 5 minutes, l'adresse est bloquée jusqu'à la fin des 5 minutes."""
     maintenant = maintenant or time.time()
@@ -470,6 +506,10 @@ def valider_profil(nom):
 
 def html_profils():
     actif = profil_actif()
+    if actif in ENFANTS:
+        return (f'<select id="pf" title="{tr("Profil")}" data-verrou="{html.escape(tr("Code parental :"))}">'
+                f'<option value="{html.escape(actif)}" selected>🧒 {html.escape(actif)}</option>'
+                f'<option value="__deverrouiller">🔓 {tr("Changer de profil…")}</option></select>')
     options = [("", "👤 Principal")] + [(p, "👤 " + p) for p in PROFILS] + [("__nouveau", "➕ " + tr("Nouveau profil…"))]
     return (f'<select id="pf" title="{tr("Profil")}" data-question="{html.escape(tr("Nom du nouveau profil :"))}">'
             + "".join(f'<option value="{html.escape(v)}"{" selected" if v == actif else ""}>{html.escape(t)}</option>'
@@ -489,7 +529,7 @@ def accueil():
         titre = (META.get(nom(kind, i)) or {}).get("titre") or LIB[kind][i][0] if kind == "films" else LIB[kind][i][1]
         return lien(kind, i), affiche(kind, i), titre, sous or ("" if kind == "films" else LIB[kind][i][0]), pct
 
-    videos = [(k, i) for k in ("films", "series") for i in range(len(LIB[k]))]
+    videos = [(k, i) for k in ("films", "series") for i in ordre(k)]
     reprendre = sorted(((S()[nom(k, i)].get("quand", 0), k, i) for k, i in videos
                         if S().get(nom(k, i), {}).get("t") and not S()[nom(k, i)].get("vu")), reverse=True)
     deja = {(k, i) for _, k, i in reprendre}
@@ -1021,7 +1061,20 @@ def html_diagnostic(sur_le_pc):
         """<script>imp.onchange=async()=>{const r=await fetch('/restaurer',{method:'POST',body:imp.files[0]});"""
         f"""imp_etat.textContent=r.ok?'{tr("Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.")}'"""
         f""":'{tr("Fichier refusé")} ('+r.status+')'}}</script>""")
-    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}'
+    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_parental() if sur_le_pc else ""}'
+
+
+def html_parental():
+    cases = "".join(f'<label><input type="checkbox" name="enfant" value="{html.escape(p)}"{" checked" if p in ENFANTS else ""}> '
+                    f'🧒 {html.escape(p)}</label> ' for p in PROFILS) or tr("Crée d'abord un profil (👤 en haut).")
+    ancien = (f'<input type="password" id="pa_ancien" placeholder="{tr("Code parental actuel")}" autocomplete="off"> '
+              if PARENTAL["jeton"] else "")
+    return (f'<h3>🧒 {tr("Contrôle parental")}</h3><p>{tr("Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.")}</p>'
+            f'<form id="pa"><p>{cases}</p>{ancien}<input type="password" id="pa_pin" placeholder="{tr("Nouveau code parental")}" autocomplete="off"> '
+            f'<button class="bt">{tr("Enregistrer")}</button> <small id="pa_etat"></small></form>'
+            """<script>pa.onsubmit=async e=>{e.preventDefault();const v=id=>(document.getElementById(id)||{}).value||'';
+const r=await fetch('/parental',{method:'POST',body:JSON.stringify({enfants:[...pa.querySelectorAll('[name=enfant]:checked')].map(c=>c.value),pin:v('pa_pin'),ancien:v('pa_ancien')})});"""
+            f"""pa_etat.textContent=r.ok?'✔':r.status==403?'{tr("Code parental incorrect")}':'{tr("Il faut un code parental de 4 caractères ou plus")}';if(r.ok)setTimeout(()=>location.reload(),600)}}</script>""")
 
 
 def bandeau_maj():
@@ -1229,14 +1282,25 @@ def polices(chemin):
     return res
 
 
+def permis(kind, i):
+    """Profil enfant : seulement les films et séries dont la fiche (TMDB/iTunes) a un genre jeunesse ; sans fiche = caché.
+    ponytail: la musique n'est pas filtrée (pas de genre fiable dans les tags)."""
+    if kind == "musique" or profil_actif() not in ENFANTS:
+        return True
+    cle = Path(LIB[kind][i][2]).name if kind == "films" else "serie:" + LIB[kind][i][1]
+    return bool(GENRES_ENFANTS & set((META.get(cle) or {}).get("genres", [])))
+
+
 def ordre(kind):
     """Numéros de LIB[kind] dans l'ordre d'affichage (dossier puis titre). LIB ne fait que grandir (voir scan)."""
     lib = LIB[kind]
-    return sorted(range(len(lib)), key=lambda i: (lib[i][1].lower(), lib[i][0].lower()))
+    return sorted((i for i in range(len(lib)) if permis(kind, i)), key=lambda i: (lib[i][1].lower(), lib[i][0].lower()))
 
 
 def episode_suivant(kind, actuel):
     o = ordre(kind)
+    if actuel not in o:
+        return None
     k = o.index(actuel) + 1
     return o[k] if k < len(o) and LIB[kind][o[k]][1] == LIB[kind][actuel][1] else None
 
@@ -1437,6 +1501,7 @@ def charger_etat():
     """Profils, affiches, « déjà vu », reprises, file d'attente : au démarrage et après l'import d'une sauvegarde."""
     cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
     PROFILS[:] = [p for p in cfg.get("profils", []) if isinstance(p, str)]
+    charger_parental(cfg)
     if CACHE.exists():
         META.update(json.loads(CACHE.read_text("utf-8")))
     SUIVI.clear()
@@ -1660,6 +1725,26 @@ class Handler(BaseHTTPRequestHandler):
     def lire_profil(self):
         c = SimpleCookie(self.headers.get("Cookie", ""))
         ACTUEL.profil = unquote(c["profil"].value) if "profil" in c else ""
+        self.verrou = None
+        # Contrôle parental : un appareil passé sur un profil enfant y reste (cookie posé par le serveur, illisible
+        # par la page) jusqu'au code parental. ponytail: effacer les cookies du navigateur enlève le verrou.
+        verrou = c["verrou"].value if "verrou" in c else ""
+        for p in ENFANTS:
+            if verrou and hmac.compare_digest(verrou, jeton_verrou(p)):
+                ACTUEL.profil = p
+                return
+        if profil_actif() in ENFANTS:
+            self.verrou = jeton_verrou(profil_actif())
+
+    def end_headers(self):
+        if getattr(self, "verrou", None):
+            self.send_header("Set-Cookie", f"verrou={self.verrou}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
+            self.verrou = None
+        super().end_headers()
+
+    def admin(self):
+        """Réglages du PC (mise à jour, sauvegarde, contrôle parental…) : sur le PC, et pas depuis un profil enfant."""
+        return self.client_address[0] in ("127.0.0.1", "::1") and profil_actif() not in ENFANTS
 
     def do_GET(self):
         self.lire_profil()
@@ -1671,6 +1756,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def get_autorise(self):
         url = urlparse(self.path)
+        m = re.match(r"/(?:media/|[a-z-]+/)?(films|series)/(\d+)", url.path)
+        if m and int(m[2]) < len(LIB[m[1]]) and not permis(m[1], int(m[2])):
+            return self.send_error(403)  # contrôle parental
         # Seuls les fichiers indexés sont servis (par numéro) : pas de traversée de chemin possible.
         m = re.fullmatch(r"/(media/films|media/series|media/musique|cover)/(\d+)", url.path)
         if m:
@@ -1751,7 +1839,7 @@ class Handler(BaseHTTPRequestHandler):
         if m and int(m[2]) < len(LIB[m[1]]):
             return self.send_bytes(json.dumps(infos_cast(m[1], int(m[2]))).encode(), "application/json")
         if url.path == "/sauvegarde":  # PC seulement : la config contient le code d'accès
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
+            if not self.admin():
                 return self.send_error(403)
             data = exporter_sauvegarde()
             self.send_response(200)
@@ -1761,7 +1849,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return self.wfile.write(data)
         if url.path == "/diagnostic":
-            return self.page_simple(html_diagnostic(self.client_address[0] in ("127.0.0.1", "::1")))
+            return self.page_simple(html_diagnostic(self.admin()))
         if url.path == "/maj-etat":
             return self.send_bytes(json.dumps({"etat": MAJ.get("etat", "")}).encode(), "application/json")
         if url.path == "/installer-etat":
@@ -1796,8 +1884,8 @@ class Handler(BaseHTTPRequestHandler):
             intro, items = page_serie(qs["s"][0])
         elif kind == "series":
             nb = {}
-            for _, d, _ in LIB["series"]:
-                nb[d] = nb.get(d, 0) + 1
+            for i in ordre("series"):
+                nb[LIB["series"][i][1]] = nb.get(LIB["series"][i][1], 0) + 1
             items, grid = "".join(carte_serie(n, c) for n, c in sorted(nb.items(), key=lambda x: x[0].lower())), True
             intro = barre_filtres("series") + intro
         else:
@@ -1950,6 +2038,22 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             return self.end_headers()
         if not self.autorise():
             return self.send_error(401)
+        if urlparse(self.path).path == "/deverrouiller":  # quitter un profil enfant : code parental
+            ip = self.client_address[0]
+            n = int(self.headers.get("Content-Length") or 0)
+            pin = self.rfile.read(min(n, 100)).decode(errors="replace")
+            if trop_d_essais(ip):
+                return self.send_error(429)
+            if not PARENTAL["jeton"] or not hmac.compare_digest(jeton_pin(pin, PARENTAL["sel"]), PARENTAL["jeton"]):
+                noter_echec(ip)
+                time.sleep(1)
+                return self.send_error(403)
+            ECHECS.pop(ip, None)
+            self.send_response(204)
+            self.send_header("Set-Cookie", "verrou=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+            self.send_header("Set-Cookie", "profil=; Path=/; SameSite=Strict; Max-Age=0")
+            self.verrou = None
+            return self.end_headers()
         self.post_autorise()
 
     def post_autorise(self):
@@ -1961,6 +2065,8 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
                 if n > 2000:
                     raise ValueError("trop gros")
                 kind, i, fichier, t, piste = valider_externe(json.loads(self.rfile.read(n)))
+                if not permis(kind, i):
+                    return self.send_error(403)
                 est_mpv = "mpv" in Path(LECTEUR[0]).stem.lower()
                 if pilote_actif():
                     fermer_pilote()  # un seul lecteur à la fois
@@ -1985,7 +2091,7 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             self.send_response(204)
             return self.end_headers()
         if urlparse(self.path).path == "/maj":  # bouton « Mettre à jour » : sur le PC seulement
-            if self.client_address[0] not in ("127.0.0.1", "::1") or not MAJ.get("exe"):
+            if not self.admin() or not MAJ.get("exe"):
                 return self.send_error(403)
             MAJ["etat"] = "téléchargement"
             threading.Thread(target=appliquer_maj, daemon=True).start()
@@ -1993,7 +2099,7 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             return self.end_headers()
         m = re.fullmatch(r"/installer/(ffmpeg|vlc)", urlparse(self.path).path)
         if m:  # seulement depuis le PC lui-même : un autre appareil ne peut pas lancer d'installation
-            if self.client_address[0] not in ("127.0.0.1", "::1") or not shutil.which("winget"):
+            if not self.admin() or not shutil.which("winget"):
                 return self.send_error(403)
             with VERROU:
                 if INSTALLS.get(m[1]) != "en cours":
@@ -2030,9 +2136,29 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             except OSError as e:
                 return self.send_error(500, str(e))
             return self.send_bytes(json.dumps({"nouveaux": n}).encode(), "application/json")
+        if urlparse(self.path).path == "/parental":  # réglages du contrôle parental (page diagnostic)
+            n = int(self.headers.get("Content-Length") or 0)
+            if not self.admin():
+                return self.send_error(403)
+            try:
+                if trop_d_essais(self.client_address[0]):
+                    return self.send_error(429)
+                nouveau = regler_parental(json.loads(self.rfile.read(min(n, 5000))))
+            except PermissionError:
+                noter_echec(self.client_address[0])
+                return self.send_error(403)
+            except (ValueError, TypeError, AttributeError):
+                return self.send_error(400)
+            with VERROU:
+                cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+                cfg.update(nouveau)
+                CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+                charger_parental(cfg)
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/restaurer":  # import d'une sauvegarde : PC seulement
             n = int(self.headers.get("Content-Length") or 0)
-            if self.client_address[0] not in ("127.0.0.1", "::1"):
+            if not self.admin():
                 return self.send_error(403)
             if not 0 < n <= 300 * 1024 ** 2:
                 return self.send_error(413)
@@ -2066,6 +2192,10 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
             except (ValueError, KeyError, TypeError, AttributeError):
                 return self.send_error(400)
             pour_video = parse_qs(urlparse(self.path).query).get("pour", [""])[0] == "video"
+            if pour_video and c["cmd"] == "jouer":  # contrôle parental : pas de film interdit lancé à distance
+                kind = PILOTE.get("kind") if pilote_actif() else VIDEO.get("kind")
+                if kind in ("films", "series") and not (c["k"].isdigit() and int(c["k"]) < len(LIB[kind]) and permis(kind, int(c["k"]))):
+                    return self.send_error(403)
             if pour_video and pilote_actif():
                 try:
                     commande_pilote(c)

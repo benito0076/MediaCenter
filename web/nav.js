@@ -26,6 +26,8 @@ document.addEventListener('keydown',e=>{const a=document.activeElement,d=DIR[e.k
   lecteur.paused?lecteur.play().catch(()=>{}):lecteur.pause();e.preventDefault()}})})();
 // Profil (👤) : choisi dans l'en-tête, gardé dans un cookie ; « ➕ Nouveau profil » demande un nom.
 {const pf=document.getElementById('pf');if(pf){const avant=pf.value;pf.onchange=async()=>{let v=pf.value;
+ if(v==='__deverrouiller'){const c=prompt(pf.dataset.verrou);pf.value=avant;  // profil enfant : code parental pour en sortir
+  if(c!==null){const r=await fetch('/deverrouiller',{method:'POST',body:c});r.ok?location.reload():alert('✖ '+r.status)}return}
  if(v==='__nouveau'){v=(prompt(pf.dataset.question)||'').trim();if(!v||!(await fetch('/profils',{method:'POST',body:v})).ok){pf.value=avant;return}}
  document.cookie='profil='+encodeURIComponent(v)+'; path=/; max-age=31536000; samesite=strict';location.reload()}}}
 // Bandeau « outils manquants » (sur le PC) : installation par winget, puis rechargement quand c'est fini.
