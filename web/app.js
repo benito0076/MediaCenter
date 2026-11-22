@@ -272,8 +272,8 @@ if(suite){document.getElementById('suite_ok').onclick=()=>{annulerSuite();suivan
  p.addEventListener('play',annulerSuite)}
 // Séries : « Passer l'intro » jusqu'à la fin du générique mémorisée pour la série (📍 la fixe à la position actuelle).
 {const sh=document.querySelector('.show'),bi=document.getElementById('intro'),bm=document.getElementById('marque');
- if(sh&&bi&&bm){let fin=+sh.dataset.intro||0;bm.hidden=false;
-  p.addEventListener('timeupdate',()=>{bi.hidden=!(fin&&p.currentTime>1&&p.currentTime<fin-2)});
+ if(sh&&bi&&bm){let fin=+sh.dataset.intro||0;
+  p.addEventListener('timeupdate',()=>{bi.hidden=!(fin&&p.currentTime>1&&p.currentTime<fin-2);bm.hidden=!(p.currentTime>0)});
   bi.onclick=()=>{p.currentTime=fin;bi.hidden=true};
   bm.onclick=async()=>{if(!(p.currentTime>5))return;fin=Math.round(p.currentTime);
    const r=await fetch('/intro',{method:'POST',body:JSON.stringify({serie:sh.dataset.serie,fin})});

@@ -3,7 +3,7 @@
 (()=>{const lecteur=document.getElementById('p');
 document.querySelectorAll('li').forEach(l=>{l.tabIndex=0});
 const q=document.getElementById('q');if(q&&matchMedia('(pointer:fine)').matches)q.focus();  // pas sur TV : clavier à l'écran
-const cibles=()=>[...document.querySelectorAll('a.tab,li,.carte,button,input,select,video')]
+const cibles=()=>[...document.querySelectorAll('a.tab,a.bt-play,a.bt,li,.carte,button,input,select,video')]
  .filter(e=>!e.hidden&&!e.disabled&&e.offsetParent!==null&&e.getClientRects().length);
 const DIR={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]};
 document.addEventListener('keydown',e=>{const a=document.activeElement,d=DIR[e.key];

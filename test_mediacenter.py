@@ -17,7 +17,7 @@ assert choisir([], "2021") == {}
 tm = [{"title": "Dune", "release_date": "1984-12-14", "overview": "", "poster_path": None},
       {"title": "Dune", "release_date": "2021-09-15", "overview": "Paul…", "poster_path": "/abc.jpg", "genre_ids": [878, 12, 99999]}]
 assert choisir_tmdb(tm, "2021") == {"titre": "Dune", "annee": "2021", "resume": "Paul…",
-                                    "affiche": "https://image.tmdb.org/t/p/w500/abc.jpg", "genres": ["Science-Fiction", "Aventure"], "source": "tmdb"}
+                                    "affiche": "https://image.tmdb.org/t/p/w500/abc.jpg", "fond": "", "genres": ["Science-Fiction", "Aventure"], "source": "tmdb"}
 assert choisir_tmdb(tm, "")["affiche"] == ""
 assert choisir_tmdb([], "") == {}
 assert nettoyer_album("Daft Punk - Discovery (2001) [FLAC]") == "Daft Punk Discovery"
@@ -280,12 +280,15 @@ m.SUIVI.update({"Dune.mkv": {"t": 600, "d": 6000, "quand": 10}, "Alien.mkv": {"t
                 "L1.mkv": {"vu": True, "t": 0, "quand": 5}, "D1.mkv": {"vu": True, "t": 0, "quand": 1}})
 m.AJOUT.clear()
 m.AJOUT.update({"/f/Dune.mkv": 1, "/f/Alien.mkv": 2, "/s/L1.mkv": 3, "/s/L2.mkv": 9, "/s/L3.mkv": 4, "/s/D1.mkv": 8})
+m.META.update({"Dune.mkv": {"affiche": "d.jpg"}, "serie:Lost": {"affiche": "l.jpg"}, "serie:Dark": {"affiche": "k.jpg"}})
 rangs = dict(m.accueil())
 assert [c[2] for c in rangs["▶ Reprendre"]] == ["Alien", "Dune"]  # plus récent d'abord
 assert rangs["▶ Reprendre"][1][4] == 10 and rangs["▶ Reprendre"][1][0] == "/?k=films&jouer=0"  # 10 % vu
 assert [(c[2], c[3]) for c in rangs["⏭ Épisodes suivants"]] == [("Lost", "S01E02")]  # Dark : plus d'épisode après
 assert rangs["⏭ Épisodes suivants"][0][0] == "/?k=series&s=Lost&jouer=1"
-assert [c[2] for c in rangs["🆕 Ajoutés récemment"]] == ["Lost", "Dark", "Alien", "Dune"]  # Lost une seule fois
+assert [c[2] for c in rangs["🆕 Ajoutés récemment"]] == ["Lost", "Dark", "Dune"]  # Lost une seule fois ; Alien sans affiche
+assert [c[2] for c in rangs["📺 Séries"]] == ["Dark", "Lost"]
+for k in ("Dune.mkv", "serie:Lost", "serie:Dark"): m.META.pop(k)
 pl = mediacenter.playlist_hls(15.5)
 assert pl.splitlines()[-1] == "#EXT-X-ENDLIST" and pl.count(".ts") == 3 and "#EXTINF:3.500," in pl, pl
 c = mediacenter.commande_segment("/f.avi", 2)

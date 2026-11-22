@@ -163,7 +163,7 @@ MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus
            "Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.":
                "Un perfil infantil solo ve películas y series de Animación, Familia o Infantil (según TMDB/iTunes); hace falta el código parental para salir.",
            "Code parental incorrect": "Código parental incorrecto", "Il faut un code parental de 4 caractères ou plus": "Hace falta un código parental de 4 caracteres o más",
-           "Code parental :": "Código parental:",
+           "Code parental :": "Código parental:", "Lecture": "Reproducir", "📺 Séries": "📺 Series",
            "Analyse des dossiers en cours… la bibliothèque se remplit (actualise la page dans un moment).":
                "Analizando las carpetas… la biblioteca se está llenando (recarga la página en un momento).", "recherche en cours": "buscando", "dernière erreur": "último error",
            "Clé API ou jeton de lecture": "Clave API o token de lectura",
@@ -581,6 +581,8 @@ def accueil():
                 suivants.append((S()[nom("series", liste[max(vus)])].get("quand", 0), i))
     recents, series_vues = [], set()
     for k, i in sorted(videos, key=lambda x: AJOUT.get(LIB[x[0]][x[1]][2], 0), reverse=True):
+        if not affiche(k, i):  # sans affiche (formations, vidéos perso…) : pas dans les rangées de l'accueil
+            continue
         if k == "series":  # une seule carte par série
             if LIB[k][i][1] in series_vues:
                 continue
@@ -588,14 +590,45 @@ def accueil():
         recents.append(carte(k, i))
         if len(recents) == 20:
             break
-    return [(tr("▶ Reprendre"), [carte(k, i) for _t, k, i in reprendre[:20]]),
-            (tr("⏭ Épisodes suivants"), [carte("series", i) for _t, i in sorted(suivants, reverse=True)[:20]]),
-            (tr("🆕 Ajoutés récemment"), recents)]
+    # Rangées « à la plateforme de streaming » : séries, puis les genres les plus fournis (films avec affiche)
+    avec = lambda k, i: bool(affiche(k, i))
+    series, vues = [], set()
+    for i in ordre("series"):
+        if LIB["series"][i][1] not in vues and avec("series", i):
+            vues.add(LIB["series"][i][1])
+            series.append(carte("series", i, " "))
+    par_genre = {}
+    for i in sorted(ordre("films"), key=lambda i: -AJOUT.get(LIB["films"][i][2], 0)):
+        for g in (META.get(nom("films", i)) or {}).get("genres", [])[:2]:
+            par_genre.setdefault(g, []).append(i)
+    genres = sorted((g for g in par_genre if len(par_genre[g]) >= 4), key=lambda g: -len(par_genre[g]))[:6]
+    return ([(tr("▶ Reprendre"), [carte(k, i) for _t, k, i in reprendre[:20]]),
+             (tr("⏭ Épisodes suivants"), [carte("series", i) for _t, i in sorted(suivants, reverse=True)[:20]]),
+             (tr("🆕 Ajoutés récemment"), recents), (tr("📺 Séries"), series[:30])]
+            + [(tr_genre(g), [carte("films", i) for i in par_genre[g] if avec("films", i)][:30]) for g in genres])
+
+
+def vedette():
+    """Film mis en avant en haut de l'accueil : un des récents avec affiche, au hasard à chaque visite."""
+    films = sorted((i for i in ordre("films") if (META.get(Path(LIB["films"][i][2]).name) or {}).get("affiche")),
+                   key=lambda i: -AJOUT.get(LIB["films"][i][2], 0))[:15]
+    if not films:
+        return ""
+    import random
+    i = random.choice(films)
+    m = META[Path(LIB["films"][i][2]).name]
+    infos = " · ".join(x for x in [m.get("annee", "")] + [tr_genre(g) for g in m.get("genres", [])[:3]] if x)
+    fond = m.get("fond") or m["affiche"]
+    return (f'<section class="hero{"" if m.get("fond") else " flou"}" style="--fond:url(&quot;{html.escape(fond)}&quot;)">'
+            + ("" if m.get("fond") else f'<img class="hero-aff" src="{html.escape(m["affiche"])}" alt="">')
+            + f'<div class="hero-txt"><h1>{html.escape(m.get("titre") or LIB["films"][i][0])}</h1><p class="meta">{html.escape(infos)}</p>'
+            f'<p class="resume">{html.escape(m.get("resume", ""))}</p>'
+            f'<a class="bt-play" href="/?k=films&amp;jouer={i}">▶ {tr("Lecture")}</a></div></section>')
 
 
 def html_accueil():
-    rangs = "".join(
-        f'<h3>{titre}</h3><div class="rang">' + "".join(
+    rangs = vedette() + "".join(
+        f'<h3>{html.escape(titre)}</h3><div class="rang">' + "".join(
             f'<a class="carte" href="{html.escape(l)}">'
             + (f'<img src="{html.escape(a)}" loading="lazy" alt="">' if a else '<div class="ph">🎬</div>')
             + f'<span>{html.escape(t)}</span><small>{html.escape(st)}</small>'
@@ -1718,6 +1751,7 @@ def choisir_tmdb(resultats, annee, champ="release_date"):  # séries : champ="fi
     r = meilleur(resultats, annee, champ)
     return {"titre": r.get("title") or r.get("name", ""), "annee": (r.get(champ) or "")[:4], "resume": r.get("overview", ""),
             "affiche": "https://image.tmdb.org/t/p/w500" + r["poster_path"] if r.get("poster_path") else "",
+            "fond": "https://image.tmdb.org/t/p/w1280" + r["backdrop_path"] if r.get("backdrop_path") else "",
             "genres": [GENRES_TMDB[g] for g in r.get("genre_ids", []) if g in GENRES_TMDB], "source": "tmdb"}
 
 
@@ -1772,7 +1806,7 @@ def _enrichir(cle=None):
     # Avec TMDB, on repasse aussi sur ce qu'iTunes a trouvé (ou pas).
     # Avec TMDB (rapide), on repasse aussi sur les fiches sans genre (mises en cache avant l'ajout des filtres).
     manquants = [x for x in a_faire if x[0] not in META or (cle and (META[x[0]].get("source") != "tmdb"
-                                                                    or (META[x[0]] and "genres" not in META[x[0]])))]
+                                                                    or (META[x[0]] and ("genres" not in META[x[0]] or "fond" not in META[x[0]]))))]
     if manquants:
         print(f"Recherche des affiches ({'TMDB' if cle else 'iTunes'}) pour {len(manquants)} films/séries (en arrière-plan)…")
     ENRICH["total"] = len(manquants)
