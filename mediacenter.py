@@ -66,7 +66,8 @@ AJOUT = {}  # chemin -> date du fichier (téléchargement)
 CFG = {}  # réglages chargés au démarrage (pour la page de diagnostic)
 DOSSIERS = {}  # type -> [dossiers racines] (modifiable depuis la page diagnostic)
 EN_LIGNE = [False]  # affiches cherchées après l'ajout d'un dossier
-RESCAN = [lambda: 0]  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
+RESCAN = [lambda: 0]
+ANALYSE = {"en_cours": False}  # 1re analyse des dossiers (au démarrage, en arrière-plan)  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
 MPV_IPC = r"\\.\pipe\mediacenter-mpv" if os.name == "nt" else os.path.join(tempfile.gettempdir(), "mediacenter-mpv.sock")
@@ -162,7 +163,9 @@ MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus
            "Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.":
                "Un perfil infantil solo ve películas y series de Animación, Familia o Infantil (según TMDB/iTunes); hace falta el código parental para salir.",
            "Code parental incorrect": "Código parental incorrecto", "Il faut un code parental de 4 caractères ou plus": "Hace falta un código parental de 4 caracteres o más",
-           "Code parental :": "Código parental:", "recherche en cours": "buscando", "dernière erreur": "último error",
+           "Code parental :": "Código parental:",
+           "Analyse des dossiers en cours… la bibliothèque se remplit (actualise la page dans un moment).":
+               "Analizando las carpetas… la biblioteca se está llenando (recarga la página en un momento).", "recherche en cours": "buscando", "dernière erreur": "último error",
            "Clé API ou jeton de lecture": "Clave API o token de lectura",
            "Facultatif : avec une clé TMDB gratuite (themoviedb.org → Paramètres → API), les affiches, résumés et genres sont bien meilleurs et arrivent en quelques secondes au lieu de plusieurs minutes avec iTunes.":
                "Opcional: con una clave TMDB gratuita (themoviedb.org → Ajustes → API), los pósters, resúmenes y géneros son mucho mejores y llegan en segundos en lugar de varios minutos con iTunes.", "Retirer": "Quitar", "Ajouter un dossier": "Añadir carpeta",
@@ -329,14 +332,21 @@ def episode(stem, dossiers):
     return nettoyer(s[:m.start()])[0] or dossier or "Divers", ep
 
 
-def sous_titres(video, seule):
+def sous_titres(video, seule, listes=None):
     """Sous-titres d'une vidéo : même nom (Film.fr.srt) ; si elle est seule dans son dossier, tous ceux du dossier
-    et d'un sous-dossier Subs/."""
-    dossiers = [video.parent] + [d for d in video.parent.iterdir()
-                                 if d.is_dir() and d.name.lower() in ("subs", "subtitles", "sous-titres", "st")]
-    return [str(f) for d in dossiers for f in sorted(d.iterdir())
-            if f.suffix.lower() in (".srt", ".vtt", ".ass", ".ssa") and f.is_file()
-            and (seule or f.name.lower().startswith(video.stem.lower()))]
+    et d'un sous-dossier Subs/. listes : dossiers déjà lus (un gros dossier de téléchargements n'est lu qu'une fois)."""
+    listes = {} if listes is None else listes
+
+    def lire(d):  # -> (sous-dossiers Subs/…, fichiers de sous-titres), triés
+        if d not in listes:
+            entrees = sorted(d.iterdir())
+            listes[d] = ([e for e in entrees if e.name.lower() in ("subs", "subtitles", "sous-titres", "st") and e.is_dir()],
+                         [e for e in entrees if e.name[-4:].lower() in (".srt", ".vtt", ".ass", ".ssa") and e.is_file()])
+        return listes[d]
+    subs_dirs, fichiers = lire(video.parent)
+    stem = video.stem.lower()
+    return [str(f) for f in fichiers + [f for d in subs_dirs for f in lire(d)[1]]
+            if seule or f.name.lower().startswith(stem)]
 
 
 def nom_sous_titre(fichier, video):
@@ -1263,6 +1273,8 @@ const r=await fetch('/parental',{method:'POST',body:JSON.stringify({enfants:[...
 
 
 def bandeau_maj():
+    if ANALYSE["en_cours"]:
+        return f'<div id="maj">⏳ {tr("Analyse des dossiers en cours… la bibliothèque se remplit (actualise la page dans un moment).")}</div>'
     if not MAJ.get("version"):
         return ""
     return (f'<div id="maj">🆕 {tr("Nouvelle version disponible")} ({MAJ["version"]}, {tr("actuelle")} {VERSION}) '
@@ -1545,7 +1557,15 @@ def episode_suivant(kind, actuel):
     return o[k] if k < len(o) and LIB[kind][o[k]][1] == LIB[kind][actuel][1] else None
 
 
+VERROU_SCAN = threading.Lock()  # une seule analyse à la fois (démarrage, 🔄, toutes les 5 min, dossier ajouté)
+
+
 def scan(dossiers):
+    with VERROU_SCAN:
+        return _scan(dossiers)
+
+
+def _scan(dossiers):
     """Ajoute les nouveaux fichiers à la bibliothèque et renvoie leur nombre.
     Les numéros (positions dans LIB) ne changent jamais pendant que le programme tourne : une page ouverte ou une vidéo
     en cours ne peut pas se retrouver sur un autre fichier. Un fichier supprimé reste listé jusqu'au redémarrage."""
@@ -1579,9 +1599,10 @@ def scan(dossiers):
             par_dossier = {}
             for _, _, c in LIB[kind]:
                 par_dossier[str(Path(c).parent)] = par_dossier.get(str(Path(c).parent), 0) + 1
+            listes = {}
             for _, _, c in LIB[kind]:
                 try:
-                    SUBS[c] = sous_titres(Path(c), par_dossier[str(Path(c).parent)] == 1)
+                    SUBS[c] = sous_titres(Path(c), par_dossier[str(Path(c).parent)] == 1, listes)
                 except OSError:
                     pass
     return nouveaux
@@ -2715,13 +2736,23 @@ def main():
     CACHE_AUDIO_MAX[0] = int(max(0.1, cfg.get("cache_audio") or 5) * 1024 ** 3)
     nettoyer_cache_audio(CACHE_AUDIO_MAX[0], demarrage=True)
     nettoyer_polices()
-    scan(dossiers)
-    print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés.")
-    if not (FFMPEG and FFPROBE) and any(c.lower().endswith(".mkv") for k in ("films", "series") for _, _, c in LIB[k]):
-        print("ℹ Pour les sous-titres intégrés aux MKV, installe ffmpeg (Windows : winget install ffmpeg) puis relance.")
     EN_LIGNE[0] = not a.hors_ligne
-    if not a.hors_ligne:
-        threading.Thread(target=enrichir, args=(cfg.get("tmdb"),), daemon=True).start()
+
+    def analyse_initiale():
+        """En arrière-plan : la page s'ouvre tout de suite, même avec un gros disque de téléchargements à parcourir."""
+        ANALYSE["en_cours"] = True
+        debut = time.time()
+        try:
+            scan(dossiers)
+        except OSError as e:
+            print(f"⚠ Analyse des dossiers impossible : {e}")
+        finally:
+            ANALYSE["en_cours"] = False
+        print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés"
+              f" en {time.time() - debut:.0f} s.")
+        if not a.hors_ligne:
+            enrichir(CFG.get("tmdb"))
+    threading.Thread(target=analyse_initiale, daemon=True).start()
     threading.Thread(target=surveiller, args=(dossiers, not a.hors_ligne, cfg.get("tmdb")), daemon=True).start()
     threading.Thread(target=surveiller_maj, daemon=True).start()
     RESCAN[0] = lambda: scan(dossiers)
