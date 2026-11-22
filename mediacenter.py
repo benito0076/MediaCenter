@@ -147,7 +147,7 @@ ES = {
         "Nueva versión disponible", "actuelle": "actual", "Mettre à jour": "Actualizar", "Voir": "Ver",
     "Téléchargement de la nouvelle version…": "Descargando la nueva versión…", "Redémarrage…": "Reiniciando…", "Installation terminée.": "Instalación terminada.", "Trier ": "Ordenar ", ">Titre<": ">Título<",
     ">Ajoutés récemment<": ">Añadidas recientemente<", "Année (récents)": "Año (recientes)", "Année (anciens)": "Año (antiguas)",
-    "Genre <": "Género <", ">Tous<": ">Todos<", " Non vus": " No vistas", "🌐 Español": "🌐 Français",
+    "Genre <": "Género <", ">Tous<": ">Todos<", " Non vus": " No vistas", " Avec affiche seulement": " Solo con póster", "🌐 Español": "🌐 Français",
 }
 # Mots isolés : seulement via tr() sur des textes précis (jamais dans traduire() : « vu » est aussi un nom de classe
 # dans le JavaScript, « Action » est dans setActionHandler…).
@@ -2023,7 +2023,8 @@ def barre_filtres(kind):
                     f'<option value="ajout">Ajoutés récemment</option><option value="annee">Année (récents)</option>'
                     f'<option value="annee_asc">Année (anciens)</option></select></label>'
                     + (f' <label>Genre <select id="genre"><option value="">Tous</option>{options}</select></label>' if genres else "")
-                    + ' <label><input type="checkbox" id="nonvus"> Non vus</label></div>')
+                    + ' <label><input type="checkbox" id="nonvus"> Non vus</label>'
+                    + ' <label><input type="checkbox" id="avecaff"> Avec affiche seulement</label></div>')
 
 
 def page_serie(nom):
