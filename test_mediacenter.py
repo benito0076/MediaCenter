@@ -454,4 +454,27 @@ st = m.stats()
 assert st["heures"] == 3.0 and st["films"] == 1 and st["episodes"] == 1 and st["par_annee"] == [("1999", 1)]
 assert st["artistes"][0] == ("Queen", 5) and st["morceaux"][0] == ("c", 4) and st["ecoutes"] == 9
 m.LIB.update(_lib); m.SUIVI.clear(); m.ECOUTES.clear()
+# Dossiers ajoutés / retirés depuis la page : fichiers masqués et plus servis, config à jour
+_conf = m.CONFIG
+with tempfile.TemporaryDirectory() as dd:
+    from pathlib import Path as _P
+    m.CONFIG = _P(dd) / "mediacenter.json"
+    a, b = _P(dd) / "A", _P(dd) / "B"
+    a.mkdir(); b.mkdir(); (a / "Un.2020.mp4").write_bytes(b"x"); (b / "Deux.2021.mp4").write_bytes(b"x")
+    _lib = list(m.LIB["films"]); m.LIB["films"].clear(); m.DOSSIERS.clear(); m.DOSSIERS.update(films=[str(a)], series=[], musique=[])
+    m.scan(m.DOSSIERS)
+    assert m.ajouter_dossier("films", str(b)) == str(b.resolve())
+    for _ in range(50):
+        if len(m.LIB["films"]) == 2: break
+        time.sleep(0.05)
+    assert len(m.ordre("films")) == 2 and _json.loads(m.CONFIG.read_text())["films"] == [str(a), str(b.resolve())]
+    m.retirer_dossier("films", str(b.resolve()))
+    assert [m.LIB["films"][i][0] for i in m.ordre("films")] == ["Un"]
+    for mauvais in (("films", str(_P(dd) / "absent")), ("autre", str(a))):
+        try:
+            m.ajouter_dossier(*mauvais); assert False
+        except ValueError:
+            pass
+    m.LIB["films"][:] = _lib; m.DOSSIERS.clear()
+m.CONFIG = _conf
 print("OK")

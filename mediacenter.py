@@ -43,6 +43,7 @@ PARENTAL = {"jeton": None, "sel": ""}  # code parental (haché) : pour quitter u
 GENRES_ENFANTS = {"Animation", "Familial", "Enfants", "Kids & Family"}  # TMDB (fr) et iTunes
 ACTUEL = threading.local()  # profil de la requête en cours
 VERROU = threading.Lock()
+VERROU_FENETRE = threading.Lock()
 EXT = {
     "films": {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v"},
     "series": {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v"},
@@ -63,6 +64,8 @@ ACCES = {"jeton": None}  # PIN pour les autres appareils (--pin) : jeton attendu
 ECHECS = {}  # adresse -> [nombre d'erreurs de PIN, heure de la première]
 AJOUT = {}  # chemin -> date du fichier (téléchargement)
 CFG = {}  # réglages chargés au démarrage (pour la page de diagnostic)
+DOSSIERS = {}  # type -> [dossiers racines] (modifiable depuis la page diagnostic)
+EN_LIGNE = [False]  # affiches cherchées après l'ajout d'un dossier
 RESCAN = [lambda: 0]  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
@@ -159,7 +162,12 @@ MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus
            "Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.":
                "Un perfil infantil solo ve películas y series de Animación, Familia o Infantil (según TMDB/iTunes); hace falta el código parental para salir.",
            "Code parental incorrect": "Código parental incorrecto", "Il faut un code parental de 4 caractères ou plus": "Hace falta un código parental de 4 caracteres o más",
-           "Code parental :": "Código parental:", "Statistiques": "Estadísticas", "heures de vidéo": "horas de vídeo",
+           "Code parental :": "Código parental:", "Retirer": "Quitar", "Ajouter un dossier": "Añadir carpeta",
+           "Les nouveaux dossiers sont analysés tout de suite ; un dossier retiré disparaît de la bibliothèque (les fichiers ne sont pas supprimés).":
+               "Las carpetas nuevas se analizan enseguida; una carpeta quitada desaparece de la biblioteca (los archivos no se borran).",
+           "Choisis le dossier dans la fenêtre ouverte sur le PC…": "Elige la carpeta en la ventana abierta en el PC…",
+           "Chemin du dossier (ex. D:\\Films) :": "Ruta de la carpeta (ej. D:\\Peliculas):", "Dossier introuvable": "Carpeta no encontrada",
+           "Analyse en cours…": "Analizando…", "Statistiques": "Estadísticas", "heures de vidéo": "horas de vídeo",
            "films vus": "películas vistas", "épisodes vus": "episodios vistos", "écoutes": "escuchas",
            "Films vus par année de sortie": "Películas vistas por año de estreno", "Artistes les plus écoutés": "Artistas más escuchados",
            "Morceaux les plus écoutés": "Canciones más escuchadas", "Hors de la maison (Tailscale)": "Fuera de casa (Tailscale)",
@@ -1141,7 +1149,27 @@ def html_diagnostic(sur_le_pc):
         """<script>imp.onchange=async()=>{const r=await fetch('/restaurer',{method:'POST',body:imp.files[0]});"""
         f"""imp_etat.textContent=r.ok?'{tr("Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.")}'"""
         f""":'{tr("Fichier refusé")} ('+r.status+')'}}</script>""")
-    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_parental() + html_osub() if sur_le_pc else ""}'
+    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_dossiers() + html_parental() + html_osub() if sur_le_pc else ""}'
+
+
+def html_dossiers():
+    noms = {"films": tr("Films"), "series": tr("Séries"), "musique": tr("Musique")}
+    lignes = "".join(
+        f'<div class="dossiers"><b>{noms[k]}</b> '
+        + "".join(f'<span class="dossier">{"" if Path(d).is_dir() else "❌ "}{html.escape(d)} '
+                  f'<button class="bt" data-retirer="{html.escape(d)}" data-kind="{k}" title="{tr("Retirer")}">✖</button></span>'
+                  for d in DOSSIERS.get(k, []))
+        + f' <button class="bt" data-ajouter="{k}">➕ {tr("Ajouter un dossier")}</button></div>' for k in noms)
+    return (f'<h3>📁 {tr("Dossiers")}</h3><p>{tr("Les nouveaux dossiers sont analysés tout de suite ; un dossier retiré disparaît de la bibliothèque (les fichiers ne sont pas supprimés).")}</p>'
+            f'{lignes}<small id="ds_etat"></small>'
+            """<script>const dsEnvoi=async c=>{const r=await fetch('/dossiers',{method:'POST',body:JSON.stringify(c)});return r};
+document.querySelectorAll('[data-ajouter]').forEach(b=>b.onclick=async()=>{const kind=b.dataset.ajouter;"""
+            f"""ds_etat.textContent='{tr("Choisis le dossier dans la fenêtre ouverte sur le PC…")}';let r=await dsEnvoi({{kind,choisir:true}});"""
+            f"""if(r.status==501){{const c=prompt({json.dumps(tr("Chemin du dossier (ex. D:\\Films) :"))});if(!c){{ds_etat.textContent='';return}}r=await dsEnvoi({{kind,ajouter:c}})}}"""
+            f"""if(!r.ok){{ds_etat.textContent='✖ {tr("Dossier introuvable")}';return}}const j=await r.json();if(j.annule){{ds_etat.textContent='';return}}"""
+            f"""ds_etat.textContent='✔ {tr("Analyse en cours…")}';setTimeout(()=>location.reload(),2500)}});"""
+            """document.querySelectorAll('[data-retirer]').forEach(b=>b.onclick=async()=>{if(!confirm(b.dataset.retirer+' ?'))return;"""
+            """const r=await dsEnvoi({kind:b.dataset.kind,retirer:b.dataset.retirer});if(r.ok)location.reload()});</script>""")
 
 
 def stats():
@@ -1423,10 +1451,64 @@ def polices(chemin):
 def permis(kind, i):
     """Profil enfant : seulement les films et séries dont la fiche (TMDB/iTunes) a un genre jeunesse ; sans fiche = caché.
     ponytail: la musique n'est pas filtrée (pas de genre fiable dans les tags)."""
+    if DOSSIERS.get(kind) is not None and not dans_dossiers(kind, LIB[kind][i][2]):
+        return False  # dossier retiré depuis la page diagnostic
     if kind == "musique" or profil_actif() not in ENFANTS:
         return True
     cle = Path(LIB[kind][i][2]).name if kind == "films" else "serie:" + LIB[kind][i][1]
     return bool(GENRES_ENFANTS & set((META.get(cle) or {}).get("genres", [])))
+
+
+def dans_dossiers(kind, chemin):
+    return any(chemin.startswith(os.path.join(str(Path(r)), "")) for r in DOSSIERS[kind])
+
+
+def ajouter_dossier(kind, d):
+    """Ajoute un dossier (page diagnostic), l'enregistre, puis l'analyse en arrière-plan ; renvoie le chemin retenu."""
+    if kind not in LIB or not isinstance(d, str) or not Path(d.strip().strip('"')).is_dir():
+        raise ValueError("dossier introuvable")
+    d = str(Path(d.strip().strip('"')).resolve())
+    with VERROU:
+        if d not in DOSSIERS.setdefault(kind, []):
+            DOSSIERS[kind].append(d)
+        enregistrer_dossiers()
+
+    def analyser():
+        if scan(DOSSIERS) and EN_LIGNE[0]:
+            enrichir(CFG.get("tmdb"))
+    threading.Thread(target=analyser, daemon=True).start()
+    return d
+
+
+def retirer_dossier(kind, d):
+    with VERROU:
+        if kind not in DOSSIERS or d not in DOSSIERS[kind]:
+            raise ValueError("dossier inconnu")
+        DOSSIERS[kind].remove(d)
+        enregistrer_dossiers()
+
+
+def enregistrer_dossiers():
+    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+    cfg.update({k: v for k, v in DOSSIERS.items()})
+    CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+    CFG.update(DOSSIERS)
+
+
+def choisir_dossier_fenetre():
+    """Fenêtre « Choisir un dossier » de Windows, sur l'écran du PC ; "" si annulé. RuntimeError si impossible."""
+    try:
+        import tkinter
+        from tkinter import filedialog
+        racine = tkinter.Tk()
+    except Exception as e:  # pas de tkinter ou pas d'écran
+        raise RuntimeError(str(e))
+    try:
+        racine.withdraw()
+        racine.attributes("-topmost", True)  # devant le navigateur
+        return filedialog.askdirectory(parent=racine, mustexist=True, title="Media Center") or ""
+    finally:
+        racine.destroy()
 
 
 def ordre(kind):
@@ -2074,7 +2156,7 @@ class Handler(BaseHTTPRequestHandler):
         body = body.replace("{accueil}", "").replace("{profils}", html_profils()).replace(
             "{outils}", bandeau_outils() if self.client_address[0] in ("127.0.0.1", "::1") else "")
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
-            n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
+            n = len({LIB[k][i][1] for i in ordre(k)}) if k == "series" else len(ordre(k))
             body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
         body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
                 .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)
@@ -2095,7 +2177,7 @@ class Handler(BaseHTTPRequestHandler):
         body = gabarit()[:gabarit().index("<main>")].replace("{accueil}", "on" if onglet == "accueil" else "")
         body = body.replace("{profils}", html_profils())
         for k in LIB:
-            n = len({d for _, d, _ in LIB[k]}) if k == "series" else len(LIB[k])
+            n = len({LIB[k][i][1] for i in ordre(k)}) if k == "series" else len(ordre(k))
             body = body.replace("{" + k + "}", "").replace("{n" + k + "}", str(n))
         body = (body + "<main>" + contenu + "</main><script>" + script + """
 const cartes=[...document.querySelectorAll('.carte')];
@@ -2331,6 +2413,27 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
                 OSUB_JETON.clear()
             self.send_response(204)
             return self.end_headers()
+        if urlparse(self.path).path == "/dossiers":  # {"kind", "ajouter": chemin | "choisir": true | "retirer": chemin}
+            n = int(self.headers.get("Content-Length") or 0)
+            if not self.admin():
+                return self.send_error(403)
+            try:
+                d = json.loads(self.rfile.read(min(n, 5000)))
+                kind = d["kind"]
+                if d.get("retirer"):
+                    retirer_dossier(kind, d["retirer"])
+                    return self.send_bytes(b"{}", "application/json")
+                chemin = d.get("ajouter") or ""
+                if d.get("choisir"):
+                    with VERROU_FENETRE:  # une seule fenêtre à la fois
+                        chemin = choisir_dossier_fenetre()
+                    if not chemin:
+                        return self.send_bytes(json.dumps({"annule": True}).encode(), "application/json")
+                return self.send_bytes(json.dumps({"ajoute": ajouter_dossier(kind, chemin)}, ensure_ascii=False).encode(), "application/json")
+            except RuntimeError:
+                return self.send_error(501)  # pas de fenêtre possible : la page demande le chemin
+            except (ValueError, KeyError, TypeError, AttributeError):
+                return self.send_error(400)
         if urlparse(self.path).path == "/parental":  # réglages du contrôle parental (page diagnostic)
             n = int(self.headers.get("Content-Length") or 0)
             if not self.admin():
@@ -2527,7 +2630,8 @@ def main():
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
     CFG.update(cfg)
     LANGUE[0] = cfg.get("langue") or langue_systeme()
-    dossiers = {k: cfg.get(k, []) for k in LIB}
+    DOSSIERS.update({k: list(cfg.get(k, [])) for k in LIB})
+    dossiers = DOSSIERS  # même objet partout : un dossier ajouté depuis la page est vu par l'analyse régulière
     if not any(dossiers.values()) and sys.stdin and sys.stdin.isatty():  # 1er lancement (double-clic sur le .exe)
         print("Premier lancement : indique tes dossiers (copier-coller le chemin, ou Entrée pour passer).")
         for k, nom in (("films", "films"), ("series", "séries TV"), ("musique", "musique")):
@@ -2555,6 +2659,7 @@ def main():
     print(f"{len(LIB['films'])} films, {len(LIB['series'])} épisodes, {len(LIB['musique'])} morceaux trouvés.")
     if not (FFMPEG and FFPROBE) and any(c.lower().endswith(".mkv") for k in ("films", "series") for _, _, c in LIB[k]):
         print("ℹ Pour les sous-titres intégrés aux MKV, installe ffmpeg (Windows : winget install ffmpeg) puis relance.")
+    EN_LIGNE[0] = not a.hors_ligne
     if not a.hors_ligne:
         threading.Thread(target=enrichir, args=(cfg.get("tmdb"),), daemon=True).start()
     threading.Thread(target=surveiller, args=(dossiers, not a.hors_ligne, cfg.get("tmdb")), daemon=True).start()

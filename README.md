@@ -11,6 +11,9 @@ Windows SmartScreen peut avertir (programme non signé) : *Informations complém
 
 **Avec Python** (sans le .exe) : `python mediacenter.py --films "D:\Films" --series "D:\Series" --musique "D:\Musique"` la première fois, puis `MediaCenter.bat`.
 
+## Dossiers (plusieurs par catégorie)
+Page **🩺 Diagnostic** (sur le PC) → *📁 Dossiers* : **➕ Ajouter un dossier** ouvre la fenêtre habituelle de Windows (sur l'écran du PC) ; on peut en mettre autant qu'on veut pour les films, les séries et la musique (plusieurs disques, par exemple). Le dossier est analysé tout de suite, sans redémarrer. **✖** retire un dossier de la bibliothèque (les fichiers ne sont pas supprimés). En ligne de commande, répéter l'option marche aussi : `--films "D:\Films" --films "E:\Films"`.
+
 ## Langue / Idioma
 Interface en **français** ou en **espagnol** : celle de Windows par défaut, bouton **🌐** en haut pour changer (ou `--langue es|fr`). Les sous-titres choisis d'office suivent la langue. Seule l'interface est traduite, jamais les titres de ta bibliothèque.
 
