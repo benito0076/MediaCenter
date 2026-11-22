@@ -443,4 +443,15 @@ with tempfile.TemporaryDirectory() as dd:
     for taille in (200_000, 1000):
         f = os.path.join(dd, "v.mkv"); open(f, "wb").write(os.urandom(taille))
         assert m.hash_osub(f) == _ref(f)
+# Statistiques : heures (vu = durée entière, sinon position), films par année, artistes
+_lib = {k: list(v) for k, v in m.LIB.items()}
+m.LIB["films"][:] = [("A", "", "/x/a.mkv"), ("B", "", "/x/b.mkv")]
+m.LIB["series"][:] = [("S01E01", "Lost", "/x/l1.mkv")]
+m.META.update({"a.mkv": {"annee": "1999"}})
+m.SUIVI.update({"a.mkv": {"vu": True, "d": 7200}, "b.mkv": {"t": 1800}, "l1.mkv": {"vu": True, "d": 1800}, "absent.mkv": {"vu": True, "d": 9e9}})
+m.ECOUTES.update({"Queen/a.mp3": 3, "Queen/b.mp3": 2, "Abba/c.mp3": 4})
+st = m.stats()
+assert st["heures"] == 3.0 and st["films"] == 1 and st["episodes"] == 1 and st["par_annee"] == [("1999", 1)]
+assert st["artistes"][0] == ("Queen", 5) and st["morceaux"][0] == ("c", 4) and st["ecoutes"] == 9
+m.LIB.update(_lib); m.SUIVI.clear(); m.ECOUTES.clear()
 print("OK")

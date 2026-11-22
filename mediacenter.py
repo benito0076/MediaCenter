@@ -24,6 +24,10 @@ FILE_F = BASE / "mediacenter_file.json"
 FILE = []  # file d'attente musique commune à tous les appareils : ["dossier/fichier", …]
 ENCOURS_F = BASE / "mediacenter_encours.json"
 LISTES_F = BASE / "mediacenter_listes.json"
+INTROS_F = BASE / "mediacenter_intros.json"
+INTROS = {}  # série -> fin du générique de début (s), pour « ⏭ Saltar intro »
+ECOUTES_F = BASE / "mediacenter_ecoutes.json"
+ECOUTES = {}  # "dossier/fichier" -> nombre d'écoutes (statistiques, radio)
 LISTES = {}  # listes de lecture musique, communes à tous les appareils : nom -> ["dossier/fichier", …]
 ENCOURS = {}  # morceau en cours, commun à tous les appareils : {"k", "t", "lecture", "dev", "quand"}
 COMMANDES = {}  # télécommande : id d'appareil -> [commandes en attente]
@@ -98,7 +102,10 @@ ES = {
     "Morceau précédent (ou début du morceau)": "Canción anterior (o inicio de la canción)", "Morceau suivant": "Canción siguiente",
     "Précédent (à distance)": "Anterior (a distancia)", "Lecture / pause (à distance)": "Reproducir / pausa (a distancia)",
     "Suivant (à distance)": "Siguiente (a distancia)", "Volume (à distance)": "Volumen (a distancia)", "À suivre": "A continuación",
-    "Vider la file": "Vaciar la cola", "💬 Chercher des sous-titres": "💬 Buscar subtítulos", "Recherche…": "Buscando…",
+    "Vider la file": "Vaciar la cola", "⏭ Passer l’intro": "⏭ Saltar intro", "📍 Fin de l’intro ici": "📍 Fin de la intro aquí",
+    "Mémorise la fin du générique pour toute la série": "Guarda el final de la intro para toda la serie",
+    "⏭ Épisode suivant dans": "⏭ Siguiente episodio en", "Lire maintenant": "Ver ahora", ">Annuler<": ">Cancelar<",
+    "Remplit la file avec cet artiste, sans fin": "Llena la cola con este artista, sin fin", 'title="Statistiques"': 'title="Estadísticas"', "💬 Chercher des sous-titres": "💬 Buscar subtítulos", "Recherche…": "Buscando…",
     "Aucun sous-titre trouvé.": "No se encontró ningún subtítulo.", "Quota du jour atteint sur OpenSubtitles.": "Cuota diaria de OpenSubtitles alcanzada.",
     "OpenSubtitles ne répond pas.": "OpenSubtitles no responde.", "Listes de lecture": "Listas de reproducción", "Mettre dans la file": "Poner en la cola",
     "Enregistrer la file": "Guardar la cola", "Supprimer la liste": "Borrar la lista", "Nom de la liste ?": "¿Nombre de la lista?",
@@ -152,7 +159,12 @@ MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus
            "Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.":
                "Un perfil infantil solo ve películas y series de Animación, Familia o Infantil (según TMDB/iTunes); hace falta el código parental para salir.",
            "Code parental incorrect": "Código parental incorrecto", "Il faut un code parental de 4 caractères ou plus": "Hace falta un código parental de 4 caracteres o más",
-           "Code parental :": "Código parental:", "Clé API": "Clave API", "Utilisateur": "Usuario", "Mot de passe": "Contraseña",
+           "Code parental :": "Código parental:", "Statistiques": "Estadísticas", "heures de vidéo": "horas de vídeo",
+           "films vus": "películas vistas", "épisodes vus": "episodios vistos", "écoutes": "escuchas",
+           "Films vus par année de sortie": "Películas vistas por año de estreno", "Artistes les plus écoutés": "Artistas más escuchados",
+           "Morceaux les plus écoutés": "Canciones más escuchadas", "Hors de la maison (Tailscale)": "Fuera de casa (Tailscale)",
+           "Tailscale actif, mais lancer avec --reseau": "Tailscale activo, pero hay que iniciar con --reseau",
+           "non installé (voir le README)": "no instalado (ver el README)", "Clé API": "Clave API", "Utilisateur": "Usuario", "Mot de passe": "Contraseña",
            "Pour le bouton « Chercher des sous-titres » : clé API gratuite sur opensubtitles.com (compte facultatif, plus de téléchargements par jour).":
                "Para el botón «Buscar subtítulos»: clave API gratuita en opensubtitles.com (cuenta opcional, más descargas al día).", "Changer de profil…": "Cambiar de perfil…", "Séries": "Series", "Musique": "Música"}
 _MOTIF_ES = re.compile("|".join(re.escape(k) for k in sorted(ES, key=len, reverse=True)))
@@ -1111,6 +1123,10 @@ def diagnostic(complet=True):
             L.append(("✅" if r == "ok" else "⚠️", tr("Mises à jour (GitHub)"), tr("joignable") if r == "ok" else f'{tr("injoignable")} ({r})'))
     L.append(("✅" if RESEAU[0] else "ℹ️", tr("Réseau"), f"http://{ip_lan()}:{PORT[0]}" if RESEAU[0] else tr("seulement ce PC (lancer avec --reseau pour la TV et le téléphone)")))
     L.append(("✅" if ACCES["jeton"] else ("⚠️" if RESEAU[0] else "ℹ️"), tr("Code d'accès"), tr("activé") if ACCES["jeton"] else tr("aucun")))
+    ts = ip_tailscale()
+    L.append(("✅" if ts and RESEAU[0] else "ℹ️", tr("Hors de la maison (Tailscale)"),
+              f"http://{ts}:{PORT[0]}" if ts and RESEAU[0] else tr("Tailscale actif, mais lancer avec --reseau") if ts
+              else tr("non installé (voir le README)")))
     L.append(("✅" if CFG.get("opensubtitles") else "ℹ️", "OpenSubtitles", tr("activé") if CFG.get("opensubtitles") else tr("aucun")))
     L.append(("ℹ️", tr("Cache audio"), f"{taille_cache_audio() / 1e6:.0f} Mo / {CACHE_AUDIO_MAX[0] / 1e9:.0f} Go"))
     return L
@@ -1126,6 +1142,53 @@ def html_diagnostic(sur_le_pc):
         f"""imp_etat.textContent=r.ok?'{tr("Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.")}'"""
         f""":'{tr("Fichier refusé")} ('+r.status+')'}}</script>""")
     return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_parental() + html_osub() if sur_le_pc else ""}'
+
+
+def stats():
+    """Chiffres du profil en cours (vidéo) et de la maison (musique)."""
+    noms = {Path(c).name: (k, i) for k in ("films", "series") for i in ordre(k) for c in [LIB[k][i][2]]}
+    secondes, films, episodes, par_annee = 0, 0, 0, {}
+    for nom, e in S().items():
+        if nom not in noms:
+            continue
+        secondes += e.get("d", 0) if e.get("vu") else e.get("t", 0)
+        if e.get("vu"):
+            k = noms[nom][0]
+            films += k == "films"
+            episodes += k == "series"
+            if k == "films":
+                a = (META.get(nom) or {}).get("annee") or "?"
+                par_annee[a] = par_annee.get(a, 0) + 1
+    artistes = {}
+    for k, n in ECOUTES.items():
+        artistes[k.split("/")[0]] = artistes.get(k.split("/")[0], 0) + n
+    top = lambda d: sorted(d.items(), key=lambda x: -x[1])[:10]
+    return {"heures": secondes / 3600, "films": films, "episodes": episodes, "par_annee": sorted(par_annee.items(), reverse=True),
+            "ecoutes": sum(ECOUTES.values()), "artistes": top(artistes),
+            "morceaux": [(Path(k).stem, n) for k, n in top(ECOUTES)]}
+
+
+def html_stats():
+    st = stats()
+    tableau = lambda lignes: '<table id="diag">' + "".join(f"<tr><td>{html.escape(str(a))}</td><td>{n}</td></tr>" for a, n in lignes) + "</table>"
+    return (f'<h2>📊 {tr("Statistiques")}</h2><p class="chiffres"><b>{st["heures"]:.1f}</b> {tr("heures de vidéo")} · '
+            f'<b>{st["films"]}</b> {tr("films vus")} · <b>{st["episodes"]}</b> {tr("épisodes vus")} · <b>{st["ecoutes"]}</b> {tr("écoutes")}</p>'
+            + (f'<h3>{tr("Films vus par année de sortie")}</h3>' + tableau(st["par_annee"]) if st["par_annee"] else "")
+            + (f'<h3>{tr("Artistes les plus écoutés")}</h3>' + tableau(st["artistes"]) if st["artistes"] else "")
+            + (f'<h3>{tr("Morceaux les plus écoutés")}</h3>' + tableau(st["morceaux"]) if st["morceaux"] else ""))
+
+
+def ip_tailscale():
+    """Adresse Tailscale du PC (accès depuis l'extérieur sans ouvrir le routeur), ou ""."""
+    outil = shutil.which("tailscale") or (r"C:\Program Files\Tailscale\tailscale.exe" if os.name == "nt" else None)
+    if not outil or not os.path.exists(outil):
+        return ""
+    try:
+        r = subprocess.run([outil, "ip", "-4"], capture_output=True, text=True, timeout=3,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return r.stdout.split()[0] if r.returncode == 0 and r.stdout.strip() else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def html_osub():
@@ -1590,6 +1653,12 @@ def charger_etat():
             ENCOURS.update(valider_encours(json.loads(ENCOURS_F.read_text("utf-8"))), lecture=False)  # rien ne joue au démarrage
         except (ValueError, KeyError, TypeError):
             pass
+    for d, f in ((INTROS, INTROS_F), (ECOUTES, ECOUTES_F)):
+        d.clear()
+        try:
+            d.update({k: v for k, v in json.loads(f.read_text("utf-8")).items() if isinstance(v, (int, float))} if f.exists() else {})
+        except (ValueError, AttributeError):
+            print(f"⚠ {f.name} illisible : ignoré")
     LISTES.clear()
     if LISTES_F.exists():
         try:
@@ -1767,7 +1836,7 @@ def page_serie(nom):
     m = META.get("serie:" + nom) or {}
     r = html.escape(m.get("resume", ""))
     img = f'<img src="{html.escape(m["affiche"])}" alt="">' if m.get("affiche") else ""
-    intro = f'<div class="show">{img}<div><h2 id="dt">{html.escape(nom)}</h2><p id="dr">{r}</p></div></div>'
+    intro = f'<div class="show" data-serie="{html.escape(nom)}" data-intro="{INTROS.get(nom, 0)}">{img}<div><h2 id="dt">{html.escape(nom)}</h2><p id="dr">{r}</p></div></div>'
     items = "".join(f'<li data-id="{i}" data-t="{html.escape(nom)} {html.escape(t)}" data-r="{r}"{a}>{html.escape(t)}{x}</li>'
                     for i in ordre("series") for t, d, c in [LIB["series"][i]] if d == nom for a, x in [suivi(c)])
     return intro, items
@@ -1929,6 +1998,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_bytes(json.dumps({"etat": MAJ.get("etat", "")}).encode(), "application/json")
         if url.path == "/installer-etat":
             return self.send_bytes(json.dumps(INSTALLS).encode(), "application/json")
+        m = re.fullmatch(r"/paroles/(\d+)", url.path)
+        if m:  # paroles synchronisées : Chanson.lrc à côté de Chanson.mp3
+            i = int(m[1])
+            lrc = Path(LIB["musique"][i][2]).with_suffix(".lrc") if i < len(LIB["musique"]) else None
+            if not lrc or not lrc.is_file():
+                return self.send_error(404)
+            return self.send_bytes(lire_texte(str(lrc)).encode(), "text/plain; charset=utf-8")
+        if url.path == "/stats":
+            return self.page_simple(html_stats())
         if url.path == "/listes":
             return self.send_bytes(json.dumps(LISTES, ensure_ascii=False).encode(), "application/json")
         if url.path == "/file":
@@ -1966,7 +2044,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             premier = {}
             items = "".join(ligne_musique(i, *LIB[kind][i], premier) for i in ordre(kind))
-        player = ('<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="pv" class="bt" title="Morceau précédent (ou début du morceau)">⏮ Précédent</button><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button>'
+        player = ('<img id="pc" hidden alt=""><audio id="p" controls></audio><button id="pv" class="bt" title="Morceau précédent (ou début du morceau)">⏮ Précédent</button><button id="sv" class="bt" title="Morceau suivant">⏭ Suivant</button><button id="al" class="bt" aria-pressed="false">🔀 Aléatoire</button><button id="rp" class="bt" aria-pressed="false">🔁 Répéter</button><button id="radio" class="bt" aria-pressed="false" title="Remplit la file avec cet artiste, sans fin">📻 Radio</button>'
+                  '<div id="paroles" hidden></div>'
                   '<div id="tc" hidden>🎛 <span id="tct"></span><br><button class="bt" data-c="precedent" aria-label="Précédent (à distance)">⏮</button>'
                   '<button class="bt" id="tcpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-c="suivant" aria-label="Suivant (à distance)">⏭</button>'
                   ' <label>🔊 <input id="tcv" type="range" min="0" max="100" value="100" aria-label="Volume (à distance)"></label></div>'
@@ -1978,6 +2057,8 @@ class Handler(BaseHTTPRequestHandler):
             '<label id="pal" hidden>🔈 Audio <select id="pas" aria-label="Piste audio"></select> <span id="pae"></span></label>'
             '<button id="amp" class="bt" hidden>🔊 Lire sur l’ampli (passthrough)</button>'
             '<button id="cast" class="bt" hidden>📺 Chromecast</button><button id="osub" class="bt" hidden>💬 Chercher des sous-titres</button>'
+            '<button id="intro" class="bt" hidden>⏭ Passer l’intro</button><button id="marque" class="bt" hidden title="Mémorise la fin du générique pour toute la série">📍 Fin de l’intro ici</button>'
+            '<div id="suite" hidden>⏭ Épisode suivant dans <b id="suite_s">10</b> s <button id="suite_ok" class="bt">Lire maintenant</button><button id="suite_x" class="bt">Annuler</button></div>'
             '<div id="vt" hidden>🎛 <span id="vtt"></span><br><button class="bt" data-v="-10" aria-label="Reculer de 10 secondes">⏪ 10 s</button>'
             '<button class="bt" id="vtpp" aria-label="Lecture / pause (à distance)">⏯</button><button class="bt" data-v="30" aria-label="Avancer de 30 secondes">30 s ⏩</button>'
             + ('<button class="bt" id="vtsv" aria-label="Épisode suivant (à distance)">⏭ Épisode suivant</button>' if kind == "series" else "")
@@ -2336,9 +2417,29 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
                     if not accepter_encours(ENCOURS, nouveau):
                         self.send_response(204)
                         return self.end_headers()
+                    if nouveau["lecture"] and nouveau["k"] != ENCOURS.get("k"):  # nouveau morceau lancé
+                        ECOUTES[nouveau["k"]] = ECOUTES.get(nouveau["k"], 0) + 1
+                        ECOUTES_F.write_text(json.dumps(ECOUTES, ensure_ascii=False), "utf-8")
                     ENCOURS.clear()
                     ENCOURS.update(nouveau)
                     ENCOURS_F.write_text(json.dumps(ENCOURS, ensure_ascii=False), "utf-8")
+            except (ValueError, KeyError, TypeError):
+                return self.send_error(400)
+            self.send_response(204)
+            return self.end_headers()
+        if urlparse(self.path).path == "/intro":  # {"serie", "fin": secondes} ; fin = 0 : oublié
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                d = json.loads(self.rfile.read(min(n, 2000)))
+                serie, fin = d["serie"], float(d["fin"])
+                if serie not in {x for _, x, _ in LIB["series"]} or not 0 <= fin < 3600:
+                    raise ValueError("intro invalide")
+                with VERROU:
+                    if fin:
+                        INTROS[serie] = round(fin)
+                    else:
+                        INTROS.pop(serie, None)
+                    INTROS_F.write_text(json.dumps(INTROS, ensure_ascii=False), "utf-8")
             except (ValueError, KeyError, TypeError):
                 return self.send_error(400)
             self.send_response(204)

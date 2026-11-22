@@ -44,6 +44,9 @@ Pour que Windows SmartScreen ne prévienne plus, il faut un **certificat de sign
 ## Accueil
 La page d'accueil montre **▶ Reprendre** (ce qui a été commencé, barre de progression), **⏭ Épisodes suivants** (l'épisode d'après le dernier vu, pour chaque série) et **🆕 Ajoutés récemment** ; un clic lance la lecture directement.
 
+## Statistiques
+Bouton **📊** en haut : heures de vidéo, films et épisodes vus (pour le profil en cours), films vus par année de sortie, artistes et morceaux les plus écoutés (comptés sur le PC à chaque morceau lancé, tous appareils confondus).
+
 ## Nouveaux téléchargements
 Les dossiers sont revus **toutes les 5 minutes** : un film, un épisode ou un album téléchargé apparaît tout seul (affiche et résumé compris). Bouton **🔄** en haut pour le faire tout de suite. (Un fichier supprimé reste listé jusqu'au prochain redémarrage.)
 
@@ -52,6 +55,9 @@ Avec ffmpeg, elles sont **converties à la volée** par le PC, par morceaux de 6
 
 ## Accès depuis la TV / le téléphone : code d'accès
 `--reseau` rend le Media Center accessible depuis le Wi-Fi (`http://IP-du-PC:8765`). Ajoute **`--pin 1234`** (mémorisé ; `--pin aucun` pour l'enlever) : chaque nouvel appareil demande le code une fois puis s'en souvient ; le PC lui-même n'en demande jamais. 10 codes faux → bloqué 5 minutes.
+
+## Hors de la maison (Tailscale, gratuit)
+Pour regarder tes films en voyage sans ouvrir le routeur : installe [Tailscale](https://tailscale.com/download) sur le PC et sur le téléphone (même compte), lance le Media Center avec `--reseau` et un code d'accès (`--pin`). La page **🩺 Diagnostic** affiche alors l'adresse à ouvrir sur le téléphone (`http://100.x.y.z:8765`). La connexion est chiffrée par Tailscale ; seuls tes appareils la voient. En 4G, la vidéo dépend du débit d'envoi de ta box.
 
 ## Grandes bibliothèques
 Des milliers de morceaux s'affichent sans ralentir (seules les lignes visibles sont dessinées). Les polices extraites des MKV inutilisées depuis 60 jours sont supprimées au démarrage.
@@ -67,6 +73,10 @@ Le titre est deviné à partir du nom du fichier (`Inception.2010.1080p.mkv` →
 
 ## Séries TV
 Les épisodes sont regroupés par série grâce au nom du fichier (`Breaking.Bad.S01E02…`, `Kaamelott 1x02…`) ou, à défaut, au nom du dossier de la série (`Series/Breaking Bad/Saison 1/…`). Clic sur une série → liste des épisodes dans l'ordre ; l'épisode suivant démarre automatiquement. Affiche et résumé de la série : TMDB si une clé est donnée, sinon iTunes.
+
+**Passer l'intro** : pendant un épisode, appuie sur **📍 Fin de l'intro ici** au moment où le générique se termine ; c'est mémorisé pour toute la série. Ensuite, le bouton **⏭ Passer l'intro** apparaît au début de chaque épisode et saute directement à ce moment (s'il y a une scène avant le générique, elle est sautée aussi).
+
+**Épisode suivant** : à la fin d'un épisode, un compte à rebours de 10 secondes lance le suivant (*Lire maintenant* ou *Annuler*).
 
 ## Reprise de lecture et « déjà vu »
 Films et épisodes reprennent là où tu les as arrêtés (barre rouge sous le titre). Passé 90 % (générique), ils sont marqués **vus** ✓ ; clique sur le ✓ pour cocher/décocher à la main. Le suivi est enregistré sur le PC (`mediacenter_suivi.json`), donc partagé entre le PC, la TV et le téléphone en mode `--reseau`.
@@ -113,6 +123,10 @@ Même principe sur les onglets Films et Séries : quand la TV (ou le PC) joue un
 
 ### File d'attente
 Le **+** au bout de chaque morceau l'ajoute à la fin de la file **À suivre** (affichée sous les boutons) ; le **↱** le place en tête (« lire juste après » : il passera dès la fin du morceau en cours). Ces morceaux passent avant la suite normale ou aléatoire, dans l'ordre d'ajout, même s'ils sont masqués par la recherche. Pour changer l'ordre, **glisse-dépose** un morceau sur un autre, ou utilise **↑ ↓** (clavier, écran tactile). Clic sur un morceau de la file : il joue tout de suite ; **×** le retire ; **Vider la file** efface tout. La file est **commune à tous les appareils** (PC, TV, téléphone en mode `--reseau`) et enregistrée sur le PC (`mediacenter_file.json`) : ajoute un morceau depuis le téléphone, il apparaît sur le PC en 5 secondes au plus. Elle survit au rechargement et au redémarrage du Media Center (même si de nouveaux morceaux ont été ajoutés ; ceux supprimés entre-temps sont simplement retirés). Si deux appareils modifient la file dans la même seconde, la dernière modification l'emporte.
+
+**📻 Radio** : remplit la file avec l'artiste du morceau en cours (son dossier), mélangé, et la recharge quand elle se vide. Si l'artiste a peu de morceaux, d'autres sont ajoutés au hasard (les genres des morceaux ne sont pas lus).
+
+**Paroles** : mets un fichier `.lrc` du même nom à côté du morceau (`Chanson.mp3` + `Chanson.lrc`) ; les paroles défilent sous le lecteur, la ligne chantée surlignée.
 
 **Listes de lecture** : *Enregistrer la file* garde la file en cours sous un nom ; choisis une liste puis *Mettre dans la file* pour la rejouer, *Supprimer la liste* pour l'effacer. Les listes sont communes à tous les appareils (`mediacenter_listes.json`).
 

@@ -206,6 +206,27 @@ if(fa){document.querySelectorAll('.qa').forEach(b=>b.onclick=e=>{e.stopPropagati
   if(nom&&nom.trim()){ls.value='';envoyerListe(nom.trim(),file.map(i=>lis[i].dataset.k)).then(()=>{ls.value=nom.trim()})}};
  document.getElementById('lsx').onclick=()=>{if(ls.value&&confirm(ls.value+' ?'))envoyerListe(ls.value,null)};
  chargerListes();
+ // Radio : la file se remplit avec l'artiste du morceau en cours (dossier de 1er niveau), mélangé, et se recharge à la fin.
+ // ponytail: « artiste » = dossier ; pas de genre (les tags ne sont pas lus) ; complété au hasard si l'artiste a peu de morceaux.
+ const radio=document.getElementById('radio');let radioOn=false;
+ const melange=t=>{for(let i=t.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[t[i],t[j]]=[t[j],t[i]]}return t};
+ function remplirRadio(){if(cur<0)return;const art=lis[cur].dataset.k.split('/')[0];
+  let t=melange(lis.map((l,i)=>i).filter(i=>i!==cur&&lis[i].dataset.k.split('/')[0]===art));
+  if(t.length<10)t=t.concat(melange(lis.map((l,i)=>i).filter(i=>i!==cur&&!t.includes(i))).slice(0,10-t.length));
+  file=file.concat(t.slice(0,50));majFile()}
+ radio.onclick=()=>{radioOn=!radioOn;bascule(radio,'radio',radioOn);if(radioOn){if(cur<0)play(hasard());remplirRadio()}};
+ p.addEventListener('play',()=>{if(radioOn&&!file.length)remplirRadio()});
+ // Paroles synchronisées (.lrc à côté du morceau) : la ligne en cours est surlignée.
+ const pz=document.getElementById('paroles');let lignes=[];
+ p.addEventListener('loadstart',async()=>{lignes=[];pz.hidden=true;pz.replaceChildren();const l=lis[cur];if(!l)return;
+  try{const r=await fetch('/paroles/'+l.dataset.id);if(!r.ok||lis[cur]!==l)return;
+   for(const ln of (await r.text()).split(/\r?\n/)){const ts=[...ln.matchAll(/\[(\d+):(\d+(?:[.:]\d+)?)\]/g)],txt=ln.replace(/\[[^\]]*\]/g,'').trim();
+    if(!ts.length&&(!txt||/^\[\w+:/.test(ln)))continue;  // lignes vides, en-têtes [ar:…] [ti:…]
+    for(const m of ts.length?ts:[null])lignes.push({t:m?+m[1]*60+parseFloat(m[2].replace(':','.')):-1,txt})}
+   lignes.sort((a,b)=>a.t-b.t);pz.replaceChildren(...lignes.map(x=>{const d=document.createElement('div');d.textContent=x.txt||'♪';return d}));pz.hidden=!lignes.length}catch(e){}});
+ p.addEventListener('timeupdate',()=>{if(!lignes.length)return;let k=-1;lignes.forEach((x,i)=>{if(x.t>=0&&x.t<=p.currentTime)k=i});
+  const on=pz.querySelector('.on'),d=pz.children[k];if(d===on)return;if(on)on.classList.remove('on');
+  if(d){d.classList.add('on');pz.scrollTop=d.offsetTop-pz.offsetTop-pz.clientHeight/2+d.clientHeight/2}});
  // Morceau en cours commun : un appareil à l'arrêt suit ce que joue un autre (même morceau, même position, en pause) ;
  // appuyer sur ▶ reprend alors la lecture ici. Les navigateurs interdisent de lancer le son tout seul.
  p.addEventListener('play',()=>{proprio=true;save()});
@@ -240,7 +261,24 @@ function suivant(){if(file.length){if(alea&&cur>=0)hist.push(cur);const n=file.s
 function precedent(){const debut=()=>{p.currentTime=0};if(cur<0||p.currentTime>3)return debut();
  if(alea)return hist.length?play(hist.pop()):debut();
  let n=cur-1;while(n>=0&&lis[n].hidden)n--;if(n<0&&repete)n=visibles().pop();n>=0?play(n):debut()}
-p.onended=()=>{if('{kind}'!=='films')suivant()};
+// Fin d'un épisode : compte à rebours de 10 s avant le suivant (annulable) ; musique : enchaîne tout de suite.
+let suiteT=null;const suite=document.getElementById('suite');
+function annulerSuite(){clearInterval(suiteT);suiteT=null;if(suite)suite.hidden=true}
+p.onended=()=>{if('{kind}'==='musique')return suivant();if('{kind}'!=='series'||!suite)return;
+ let n=cur+1;while(n<lis.length&&lis[n].hidden)n++;if(n>=lis.length)return;
+ let r=10;suite.hidden=false;document.getElementById('suite_s').textContent=r;
+ suiteT=setInterval(()=>{r--;document.getElementById('suite_s').textContent=r;if(r<=0){annulerSuite();suivant()}},1000)};
+if(suite){document.getElementById('suite_ok').onclick=()=>{annulerSuite();suivant()};document.getElementById('suite_x').onclick=annulerSuite;
+ p.addEventListener('play',annulerSuite)}
+// Séries : « Passer l'intro » jusqu'à la fin du générique mémorisée pour la série (📍 la fixe à la position actuelle).
+{const sh=document.querySelector('.show'),bi=document.getElementById('intro'),bm=document.getElementById('marque');
+ if(sh&&bi&&bm){let fin=+sh.dataset.intro||0;bm.hidden=false;
+  p.addEventListener('timeupdate',()=>{bi.hidden=!(fin&&p.currentTime>1&&p.currentTime<fin-2)});
+  bi.onclick=()=>{p.currentTime=fin;bi.hidden=true};
+  bm.onclick=async()=>{if(!(p.currentTime>5))return;fin=Math.round(p.currentTime);
+   const r=await fetch('/intro',{method:'POST',body:JSON.stringify({serie:sh.dataset.serie,fin})});
+   bm.textContent=r.ok?'📍 ✓ '+Math.floor(fin/60)+':'+String(fin%60).padStart(2,'0'):'✖';setTimeout(()=>{bm.textContent=bm.dataset.t},2500)};
+  bm.dataset.t=bm.textContent}}
 const sv2=()=>distant?commande('suivant'):suivant(),pv2=()=>distant?commande('precedent'):precedent();  // à distance si besoin
 if(al){document.getElementById('sv').onclick=sv2;  // marche aussi en « Répéter 1 » : on passe quand même au suivant
  document.getElementById('pv').onclick=pv2;
