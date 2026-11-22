@@ -67,7 +67,7 @@ CFG = {}  # réglages chargés au démarrage (pour la page de diagnostic)
 DOSSIERS = {}  # type -> [dossiers racines] (modifiable depuis la page diagnostic)
 EN_LIGNE = [False]  # affiches cherchées après l'ajout d'un dossier
 RESCAN = [lambda: 0]
-ANALYSE = {"en_cours": False}  # 1re analyse des dossiers (au démarrage, en arrière-plan)  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
+ANALYSE = {"en_cours": False, "vus": 0}  # 1re analyse des dossiers (au démarrage, en arrière-plan)  # bouton 🔄 : analyse immédiate des dossiers (défini dans main)
 LECTEUR = [None]  # lecteur externe (mpv ou VLC) pour la passthrough vers l'ampli
 PILOTE = {}  # mpv ou VLC lancé par le Media Center : {"type", "proc", "kind", "id", "titre", (VLC) "port", "mdp", "aui", "sti"}
 MPV_IPC = r"\\.\pipe\mediacenter-mpv" if os.name == "nt" else os.path.join(tempfile.gettempdir(), "mediacenter-mpv.sock")
@@ -1122,7 +1122,7 @@ def diagnostic(complet=True):
     for k, nom in (("films", "Films"), ("series", "Séries"), ("musique", "Musique")):
         for d in src.get(k, []):
             ok = Path(d).is_dir()
-            n = sum(1 for kk in LIB for _t, _d, c in LIB[kk] if c.startswith(os.path.join(str(Path(d)), "")))
+            n = sum(1 for kk in LIB for _t, _d, c in LIB[kk] if dans(c, str(Path(d))))
             L.append(("✅" if ok else "❌", f'{tr("Dossier")} {tr(nom)}', f"{d} — {n} {tr('fichiers')}" if ok else f"{d} : {tr('introuvable')}"))
     if not any(src.get(k) for k in LIB):
         L.append(("❌", tr("Dossiers"), tr("aucun dossier configuré")))
@@ -1274,7 +1274,8 @@ const r=await fetch('/parental',{method:'POST',body:JSON.stringify({enfants:[...
 
 def bandeau_maj():
     if ANALYSE["en_cours"]:
-        return f'<div id="maj">⏳ {tr("Analyse des dossiers en cours… la bibliothèque se remplit (actualise la page dans un moment).")}</div>'
+        return (f'<div id="maj">⏳ {tr("Analyse des dossiers en cours… la bibliothèque se remplit (actualise la page dans un moment).")}'
+                f' ({ANALYSE["vus"]} {tr("fichiers")})</div>')
     if not MAJ.get("version"):
         return ""
     return (f'<div id="maj">🆕 {tr("Nouvelle version disponible")} ({MAJ["version"]}, {tr("actuelle")} {VERSION}) '
@@ -1492,7 +1493,7 @@ def permis(kind, i):
 
 def dans_dossiers(kind, chemin):
     racines = DOSSIERS[kind] + (DOSSIERS.get("films", []) if kind == "series" else [])  # épisodes rangés avec les films
-    return any(chemin.startswith(os.path.join(str(Path(r)), "")) for r in racines)
+    return any(dans(chemin, str(Path(r))) for r in racines)
 
 
 def ajouter_dossier(kind, d):
@@ -1565,46 +1566,92 @@ def scan(dossiers):
         return _scan(dossiers)
 
 
+# Dossiers jamais parcourus (disque entier configuré : on saute Windows, la corbeille, les programmes…).
+IGNORES = {"$recycle.bin", "system volume information", "windows", "program files", "program files (x86)", "programdata",
+           "appdata", "recovery", "perflogs", "msocache", "node_modules", "$windows.~bt", "$windows.~ws", "config.msi"}
+
+
+def dans(chemin, racine):
+    chemin, racine = os.path.normcase(chemin), os.path.normcase(racine)
+    return chemin == racine or chemin.startswith(os.path.join(racine, ""))
+
+
 def _scan(dossiers):
     """Ajoute les nouveaux fichiers à la bibliothèque et renvoie leur nombre.
     Les numéros (positions dans LIB) ne changent jamais pendant que le programme tourne : une page ouverte ou une vidéo
-    en cours ne peut pas se retrouver sur un autre fichier. Un fichier supprimé reste listé jusqu'au redémarrage."""
+    en cours ne peut pas se retrouver sur un autre fichier. Un fichier supprimé reste listé jusqu'au redémarrage.
+    Chaque dossier n'est parcouru qu'une fois, même s'il sert à plusieurs types ou contient un autre dossier configuré
+    (ex. « H:\\ » en films, séries et musique) ; la bibliothèque se remplit au fur et à mesure."""
     nouveaux = 0
     connus = {c for k in LIB for _, _, c in LIB[k]}
-    rangés = {k: [] for k in LIB}  # nouveaux fichiers par type (un épisode trouvé dans les films va dans les séries)
-    for kind, roots in dossiers.items():
-        for root in roots:
-            root = Path(root)
-            for p in root.rglob("*"):
-                if p.suffix.lower() in EXT[kind] and str(p) not in connus and p.is_file():
-                    connus.add(str(p))  # un même dossier configuré deux fois : compté une seule fois
-                    dossier = str(p.parent.relative_to(root))
-                    dossier = "" if dossier == "." else dossier
-                    cible = "series" if kind == "films" and EP.search(re.sub(r"[._]+", " ", p.stem)) else kind
-                    if cible == "series":  # « Serie.S01E02… » : épisode, même rangé avec les films (dossier de téléchargements)
-                        dossier, titre = episode(p.stem, p.parent.relative_to(root).parts if kind == "series" else ())
+    racines = {k: [str(Path(r)) for r in dossiers.get(k, []) if Path(r).is_dir()] for k in LIB}
+    toutes = sorted({r for v in racines.values() for r in v}, key=len)
+    a_parcourir = [r for n, r in enumerate(toutes) if not any(dans(r, x) for x in toutes[:n])]
+    rangés = {k: [] for k in LIB}
+
+    def ranger():  # verse les fichiers trouvés dans la bibliothèque (visible tout de suite)
+        nonlocal nouveaux
+        for kind, items in rangés.items():
+            LIB[kind] += sorted(items, key=lambda x: (x[1].lower(), x[0].lower()))
+            nouveaux += len(items)
+            items.clear()
+
+    def racine_de(kind, chemin):  # dossier configuré le plus précis qui contient le fichier
+        return max((r for r in racines[kind] if dans(chemin, r)), key=len, default=None)
+    ANALYSE["vus"] = 0
+    for haut in a_parcourir:
+        for parent, sous, fichiers in os.walk(haut):
+            sous[:] = [d for d in sous if d.lower() not in IGNORES and not d.startswith((".", "$"))]
+            ANALYSE["vus"] += len(fichiers)
+            for nom in fichiers:
+                ext = os.path.splitext(nom)[1].lower()
+                chemin = os.path.join(parent, nom)
+                if chemin in connus or not (ext in EXT["films"] or ext in EXT["musique"]):
+                    continue
+                p = Path(chemin)
+                if ext in EXT["films"]:
+                    r_films, r_series = racine_de("films", chemin), racine_de("series", chemin)
+                    est_ep = EP.search(re.sub(r"[._]+", " ", p.stem))
+                    if r_films and not est_ep:
+                        kind, root = "films", r_films
+                    elif r_series or r_films:  # « Serie.S01E02… » : épisode, même rangé avec les films (téléchargements)
+                        kind, root = "series", r_series or r_films
                     else:
-                        titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
-                    rangés[cible].append((titre or p.stem, dossier, str(p)))
-                    AJOUT[str(p)] = p.stat().st_mtime  # pour « Ajoutés récemment »
-                    if kind == "musique":
-                        if str(p.parent) not in COVERS:
-                            COVERS[str(p.parent)] = pochette_locale(p.parent)
-                        if not COVERS[str(p.parent)] and pochette_integree(str(p)):
-                            COVERS[str(p.parent)] = str(p)
-    for kind, items in rangés.items():
-        LIB[kind] += sorted(items, key=lambda i: (i[1].lower(), i[0].lower()))
-        nouveaux += len(items)
-        if kind != "musique":  # sous-titres revus pour toutes les vidéos : un .srt ajouté après coup est trouvé
-            par_dossier = {}
-            for _, _, c in LIB[kind]:
-                par_dossier[str(Path(c).parent)] = par_dossier.get(str(Path(c).parent), 0) + 1
-            listes = {}
-            for _, _, c in LIB[kind]:
+                        continue
+                else:
+                    kind, root = "musique", racine_de("musique", chemin)
+                    if not root:
+                        continue
+                connus.add(chemin)
+                dossier = os.path.relpath(parent, root)
+                dossier = "" if dossier == "." else dossier
+                if kind == "series":
+                    dossier, titre = episode(p.stem, Path(dossier).parts if root in racines["series"] else ())
+                else:
+                    titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
+                rangés[kind].append((titre or p.stem, dossier, chemin))
                 try:
-                    SUBS[c] = sous_titres(Path(c), par_dossier[str(Path(c).parent)] == 1, listes)
+                    AJOUT[chemin] = p.stat().st_mtime  # pour « Ajoutés récemment »
                 except OSError:
-                    pass
+                    AJOUT[chemin] = 0
+                if kind == "musique":
+                    if parent not in COVERS:
+                        COVERS[parent] = pochette_locale(p.parent)
+                    if not COVERS[parent] and pochette_integree(chemin):
+                        COVERS[parent] = chemin
+            if sum(map(len, rangés.values())) >= 200:
+                ranger()
+    ranger()
+    for kind in ("films", "series"):  # sous-titres revus pour toutes les vidéos : un .srt ajouté après coup est trouvé
+        par_dossier = {}
+        for _, _, c in LIB[kind]:
+            par_dossier[str(Path(c).parent)] = par_dossier.get(str(Path(c).parent), 0) + 1
+        listes = {}
+        for _, _, c in LIB[kind]:
+            try:
+                SUBS[c] = sous_titres(Path(c), par_dossier[str(Path(c).parent)] == 1, listes)
+            except OSError:
+                pass
     return nouveaux
 
 

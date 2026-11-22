@@ -497,4 +497,21 @@ with tempfile.TemporaryDirectory() as dd:
     m.DOSSIERS["series"] = []
     assert len(m.ordre("series")) == 2  # visibles même sans dossier de séries
     m.LIB.update(_lib); m.DOSSIERS.clear()
+# Disque entier en films + séries + musique, avec un sous-dossier aussi configuré : parcouru une fois, sans doublon,
+# dossiers système sautés
+with tempfile.TemporaryDirectory() as dd:
+    from pathlib import Path as _P
+    H = _P(dd) / "H"
+    for f in ("Film Français/Amelie.2001.mkv", "Series/Lost/Lost.S01E01.mkv", "Musique/Queen/Bohemian.mp3",
+              "$RECYCLE.BIN/Vieux.2000.mkv", "Windows/x.mp3", ".cache/y.mkv", "Divers.2019.mp4"):
+        (H / f).parent.mkdir(parents=True, exist_ok=True); (H / f).write_bytes(b"x")
+    _lib = {k: list(v) for k, v in m.LIB.items()}
+    for k in m.LIB: m.LIB[k].clear()
+    m.DOSSIERS.clear(); m.DOSSIERS.update(films=[str(H / "Film Français"), str(H)], series=[str(H)], musique=[str(H)])
+    assert m.scan(m.DOSSIERS) == 4, m.LIB
+    assert sorted(t for t, _, _ in m.LIB["films"]) == ["Amelie", "Divers"]
+    assert [(d, t) for t, d, _ in m.LIB["series"]] == [("Lost", "S01E01")]
+    assert [(t, d) for t, d, _ in m.LIB["musique"]] == [("Bohemian", os.path.join("Musique", "Queen"))]
+    assert m.dans(str(H / "Film Français" / "a.mkv"), str(H)) and not m.dans(str(H) + "2/a.mkv", str(H))
+    m.LIB.update(_lib); m.DOSSIERS.clear()
 print("OK")
