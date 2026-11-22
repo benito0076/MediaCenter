@@ -1112,7 +1112,7 @@ def diagnostic(complet=True):
     for k, nom in (("films", "Films"), ("series", "Séries"), ("musique", "Musique")):
         for d in src.get(k, []):
             ok = Path(d).is_dir()
-            n = sum(1 for _t, _d, c in LIB[k] if c.startswith(str(Path(d))))
+            n = sum(1 for kk in LIB for _t, _d, c in LIB[kk] if c.startswith(os.path.join(str(Path(d)), "")))
             L.append(("✅" if ok else "❌", f'{tr("Dossier")} {tr(nom)}', f"{d} — {n} {tr('fichiers')}" if ok else f"{d} : {tr('introuvable')}"))
     if not any(src.get(k) for k in LIB):
         L.append(("❌", tr("Dossiers"), tr("aucun dossier configuré")))
@@ -1479,7 +1479,8 @@ def permis(kind, i):
 
 
 def dans_dossiers(kind, chemin):
-    return any(chemin.startswith(os.path.join(str(Path(r)), "")) for r in DOSSIERS[kind])
+    racines = DOSSIERS[kind] + (DOSSIERS.get("films", []) if kind == "series" else [])  # épisodes rangés avec les films
+    return any(chemin.startswith(os.path.join(str(Path(r)), "")) for r in racines)
 
 
 def ajouter_dossier(kind, d):
@@ -1549,26 +1550,29 @@ def scan(dossiers):
     Les numéros (positions dans LIB) ne changent jamais pendant que le programme tourne : une page ouverte ou une vidéo
     en cours ne peut pas se retrouver sur un autre fichier. Un fichier supprimé reste listé jusqu'au redémarrage."""
     nouveaux = 0
+    connus = {c for k in LIB for _, _, c in LIB[k]}
+    rangés = {k: [] for k in LIB}  # nouveaux fichiers par type (un épisode trouvé dans les films va dans les séries)
     for kind, roots in dossiers.items():
-        connus = {c for _, _, c in LIB[kind]}
-        items = []
         for root in roots:
             root = Path(root)
             for p in root.rglob("*"):
                 if p.suffix.lower() in EXT[kind] and str(p) not in connus and p.is_file():
+                    connus.add(str(p))  # un même dossier configuré deux fois : compté une seule fois
                     dossier = str(p.parent.relative_to(root))
                     dossier = "" if dossier == "." else dossier
-                    if kind == "series":
-                        dossier, titre = episode(p.stem, p.parent.relative_to(root).parts)
+                    cible = "series" if kind == "films" and EP.search(re.sub(r"[._]+", " ", p.stem)) else kind
+                    if cible == "series":  # « Serie.S01E02… » : épisode, même rangé avec les films (dossier de téléchargements)
+                        dossier, titre = episode(p.stem, p.parent.relative_to(root).parts if kind == "series" else ())
                     else:
                         titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
-                    items.append((titre or p.stem, dossier, str(p)))
+                    rangés[cible].append((titre or p.stem, dossier, str(p)))
                     AJOUT[str(p)] = p.stat().st_mtime  # pour « Ajoutés récemment »
                     if kind == "musique":
                         if str(p.parent) not in COVERS:
                             COVERS[str(p.parent)] = pochette_locale(p.parent)
                         if not COVERS[str(p.parent)] and pochette_integree(str(p)):
                             COVERS[str(p.parent)] = str(p)
+    for kind, items in rangés.items():
         LIB[kind] += sorted(items, key=lambda i: (i[1].lower(), i[0].lower()))
         nouveaux += len(items)
         if kind != "musique":  # sous-titres revus pour toutes les vidéos : un .srt ajouté après coup est trouvé

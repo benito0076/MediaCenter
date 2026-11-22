@@ -481,4 +481,20 @@ m.CONFIG = _conf
 import re as _re2
 _css = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "style.css"), encoding="utf-8").read()
 assert _re2.search(r"ul\.grid img[^{]*\{[^}]*width:100%[^}]*aspect-ratio:2/3", _css)
+# Dossier de téléchargements rangé dans les films : les épisodes (S01E02) vont dans les séries, et restent visibles
+with tempfile.TemporaryDirectory() as dd:
+    from pathlib import Path as _P
+    dl = _P(dd) / "Download"; (dl / "Friends.Sex.and.Games.S01.MULTi.1080p.WEB.H265-GL0P").mkdir(parents=True)
+    for n in (1, 2):
+        (dl / "Friends.Sex.and.Games.S01.MULTi.1080p.WEB.H265-GL0P" / f"Friends.Sex.and.Games.S01E0{n}.MULTi.1080p.WEB.H265-GL0P.mkv").write_bytes(b"x")
+    (dl / "Inception.2010.1080p.mkv").write_bytes(b"x")
+    _lib = {k: list(v) for k, v in m.LIB.items()}
+    for k in m.LIB: m.LIB[k].clear()
+    m.DOSSIERS.clear(); m.DOSSIERS.update(films=[str(dl)], series=[str(dl)], musique=[])  # même dossier dans les deux : pas de doublon
+    assert m.scan(m.DOSSIERS) == 3 and m.scan(m.DOSSIERS) == 0
+    assert [t for t, _, _ in m.LIB["films"]] == ["Inception"]
+    assert [(d, t) for t, d, _ in m.LIB["series"]] == [("Friends Sex and Games", "S01E01"), ("Friends Sex and Games", "S01E02")]
+    m.DOSSIERS["series"] = []
+    assert len(m.ordre("series")) == 2  # visibles même sans dossier de séries
+    m.LIB.update(_lib); m.DOSSIERS.clear()
 print("OK")
