@@ -162,7 +162,10 @@ MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus
            "Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.":
                "Un perfil infantil solo ve películas y series de Animación, Familia o Infantil (según TMDB/iTunes); hace falta el código parental para salir.",
            "Code parental incorrect": "Código parental incorrecto", "Il faut un code parental de 4 caractères ou plus": "Hace falta un código parental de 4 caracteres o más",
-           "Code parental :": "Código parental:", "Retirer": "Quitar", "Ajouter un dossier": "Añadir carpeta",
+           "Code parental :": "Código parental:", "recherche en cours": "buscando", "dernière erreur": "último error",
+           "Clé API ou jeton de lecture": "Clave API o token de lectura",
+           "Facultatif : avec une clé TMDB gratuite (themoviedb.org → Paramètres → API), les affiches, résumés et genres sont bien meilleurs et arrivent en quelques secondes au lieu de plusieurs minutes avec iTunes.":
+               "Opcional: con una clave TMDB gratuita (themoviedb.org → Ajustes → API), los pósters, resúmenes y géneros son mucho mejores y llegan en segundos en lugar de varios minutos con iTunes.", "Retirer": "Quitar", "Ajouter un dossier": "Añadir carpeta",
            "Les nouveaux dossiers sont analysés tout de suite ; un dossier retiré disparaît de la bibliothèque (les fichiers ne sont pas supprimés).":
                "Las carpetas nuevas se analizan enseguida; una carpeta quitada desaparece de la biblioteca (los archivos no se borran).",
            "Choisis le dossier dans la fenêtre ouverte sur le PC…": "Elige la carpeta en la ventana abierta en el PC…",
@@ -1103,19 +1106,25 @@ def diagnostic(complet=True):
     L = [("✅" if VERSION else "ℹ️", tr("Version"), f"build {VERSION}" if VERSION else tr("lancé avec Python (pas de mise à jour automatique)"))]
     if VERSION and MAJ.get("version"):
         L.append(("⚠️", tr("Mise à jour"), f'{tr("version disponible")} : build {MAJ["version"]}'))
+    src = DOSSIERS if any(DOSSIERS.values()) else CFG
     for k, nom in (("films", "Films"), ("series", "Séries"), ("musique", "Musique")):
-        for d in CFG.get(k, []):
+        for d in src.get(k, []):
             ok = Path(d).is_dir()
             n = sum(1 for _t, _d, c in LIB[k] if c.startswith(str(Path(d))))
             L.append(("✅" if ok else "❌", f'{tr("Dossier")} {tr(nom)}', f"{d} — {n} {tr('fichiers')}" if ok else f"{d} : {tr('introuvable')}"))
-    if not any(CFG.get(k) for k in LIB):
+    if not any(src.get(k) for k in LIB):
         L.append(("❌", tr("Dossiers"), tr("aucun dossier configuré")))
     L.append(("✅" if FFMPEG and FFPROBE else "⚠️", "ffmpeg", FFMPEG or tr("absent : vidéos AVI/HEVC, pistes et sous-titres des MKV, son AC3/DTS indisponibles")))
     L.append(("✅" if LECTEUR[0] else "⚠️", tr("Lecteur pour l'ampli"), LECTEUR[0] or tr("ni mpv ni VLC : pas de passthrough")))
     fiches = [Path(c).name for _t, _d, c in LIB["films"]] + ["serie:" + d for d in {d for _t, d, _c in LIB["series"]}]
     avec = sum(1 for f in fiches if (META.get(f) or {}).get("affiche"))
     if fiches:
-        L.append(("✅" if avec == len(fiches) else "⚠️", tr("Affiches"), f"{avec} / {len(fiches)}"))
+        detail = f"{avec} / {len(fiches)}"
+        if ENRICH["en_cours"]:
+            detail += f' — {tr("recherche en cours")} : {ENRICH["fait"]} / {ENRICH["total"]}'
+        if ENRICH["erreur"]:
+            detail += f' — {tr("dernière erreur")} : {ENRICH["erreur"]}'
+        L.append(("✅" if avec == len(fiches) else "⚠️", tr("Affiches"), detail))
     if complet:
         cle = CFG.get("tmdb")
         if cle:
@@ -1149,7 +1158,7 @@ def html_diagnostic(sur_le_pc):
         """<script>imp.onchange=async()=>{const r=await fetch('/restaurer',{method:'POST',body:imp.files[0]});"""
         f"""imp_etat.textContent=r.ok?'{tr("Restauré. Redémarre le Media Center si tu as changé de dossiers ou de code.")}'"""
         f""":'{tr("Fichier refusé")} ('+r.status+')'}}</script>""")
-    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_dossiers() + html_parental() + html_osub() if sur_le_pc else ""}'
+    return f'<h2>🩺 {tr("Diagnostic")}</h2><table id="diag">{lignes}</table>{sauvegarde}{html_dossiers() + html_tmdb() + html_parental() + html_osub() if sur_le_pc else ""}'
 
 
 def html_dossiers():
@@ -1217,6 +1226,14 @@ def ip_tailscale():
         return r.stdout.split()[0] if r.returncode == 0 and r.stdout.strip() else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def html_tmdb():
+    return (f'<h3>🎬 TMDB</h3><p>{tr("Facultatif : avec une clé TMDB gratuite (themoviedb.org → Paramètres → API), les affiches, résumés et genres sont bien meilleurs et arrivent en quelques secondes au lieu de plusieurs minutes avec iTunes.")}</p>'
+            f'<form id="tm"><input id="tm_cle" placeholder="{tr("Clé API ou jeton de lecture")}" value="{html.escape(CFG.get("tmdb") or "")}" autocomplete="off" size="40"> '
+            f'<button class="bt">{tr("Enregistrer")}</button> <small id="tm_etat"></small></form>'
+            """<script>tm.onsubmit=async e=>{e.preventDefault();const r=await fetch('/tmdb',{method:'POST',body:tm_cle.value.trim()});"""
+            """tm_etat.textContent=r.ok?'✔':'✖ '+r.status;if(r.ok)setTimeout(()=>location.reload(),1500)}</script>""")
 
 
 def html_osub():
@@ -1576,7 +1593,7 @@ def surveiller(dossiers, en_ligne, cle, minutes=5):
         if n:
             print(f"{n} nouveau(x) fichier(s) ajouté(s).")
             if en_ligne:
-                enrichir(cle)
+                enrichir(CFG.get("tmdb") or cle)
 
 
 def meilleur(resultats, annee, champ_date):
@@ -1624,12 +1641,12 @@ def choisir_tmdb(resultats, annee, champ="release_date"):  # séries : champ="fi
 def chercher_itunes(titre, annee, quoi="movie"):
     media, entity = ("movie", "movie") if quoi == "movie" else ("tvShow", "tvSeason")
     q = urlencode({"term": titre, "media": media, "entity": entity, "country": "fr", "lang": "fr_fr", "limit": 10})
-    with urlopen("https://itunes.apple.com/search?" + q, timeout=10) as r:
+    with urlopen(Request("https://itunes.apple.com/search?" + q, headers=ENTETES), timeout=10) as r:
         return choisir(json.load(r).get("results", []), annee)
 
 
 def chercher_tmdb(titre, annee, cle, quoi="movie"):
-    q, h = {"query": titre, "language": "fr-FR"}, {"Accept": "application/json"}
+    q, h = {"query": titre, "language": "fr-FR"}, dict(ENTETES)
     if cle.startswith("eyJ"):  # « jeton d'accès en lecture » (long) plutôt que « clé d'API » (courte)
         h["Authorization"] = "Bearer " + cle
     else:
@@ -1641,7 +1658,7 @@ def chercher_tmdb(titre, annee, cle, quoi="movie"):
 
 def chercher_album(terme):
     q = urlencode({"term": terme, "media": "music", "entity": "album", "country": "fr", "limit": 1})
-    with urlopen("https://itunes.apple.com/search?" + q, timeout=10) as r:
+    with urlopen(Request("https://itunes.apple.com/search?" + q, headers=ENTETES), timeout=10) as r:
         res = json.load(r).get("results", [])
     return {"affiche": res[0].get("artworkUrl100", "").replace("100x100", "600x600")} if res else {}
 
@@ -1650,7 +1667,23 @@ def sauver():
     CACHE.write_text(json.dumps(META, ensure_ascii=False), "utf-8")
 
 
+ENRICH = {"en_cours": False, "fait": 0, "total": 0, "erreur": ""}  # recherche des affiches (page diagnostic)
+VERROU_ENRICHIR = threading.Lock()
+ENTETES = {"User-Agent": "MediaCenter", "Accept": "application/json"}
+
+
 def enrichir(cle=None):
+    if not VERROU_ENRICHIR.acquire(blocking=False):
+        return  # déjà en cours (démarrage, rescan, dossier ajouté…)
+    try:
+        ENRICH.update(en_cours=True, fait=0, total=0, erreur="")
+        _enrichir(cle)
+    finally:
+        ENRICH["en_cours"] = False
+        VERROU_ENRICHIR.release()
+
+
+def _enrichir(cle=None):
     a_faire = [(Path(c).name, *nettoyer(Path(c).stem), "movie") for _, _, c in LIB["films"]]
     a_faire += [("serie:" + n, n, "", "tv") for n in dict.fromkeys(d for _, d, _ in LIB["series"])]
     # Avec TMDB, on repasse aussi sur ce qu'iTunes a trouvé (ou pas).
@@ -1659,16 +1692,21 @@ def enrichir(cle=None):
                                                                     or (META[x[0]] and "genres" not in META[x[0]])))]
     if manquants:
         print(f"Recherche des affiches ({'TMDB' if cle else 'iTunes'}) pour {len(manquants)} films/séries (en arrière-plan)…")
+    ENRICH["total"] = len(manquants)
     for cle_meta, titre, annee, quoi in manquants:
+        ENRICH["fait"] += 1
         try:
             info = chercher_tmdb(titre, annee, cle, quoi) if cle else chercher_itunes(titre, annee, quoi)
         except HTTPError as e:
+            ENRICH["erreur"] = f"{cle_meta} : HTTP {e.code}"
             if e.code == 401:
                 print("⚠ Clé TMDB refusée : vérifie-la (python mediacenter.py --tmdb CLE)")
                 break
             print(f"⚠ Affiche non récupérée pour {cle_meta} : {e}")
+            time.sleep(0 if cle else 20 if e.code in (403, 429) else 3)  # iTunes : trop de demandes, on ralentit
             continue
         except (OSError, ValueError) as e:  # pas d'internet : on réessaiera au prochain lancement
+            ENRICH["erreur"] = f"{cle_meta} : {str(getattr(e, 'reason', e))[:100]}"
             print(f"⚠ Affiche non récupérée pour {cle_meta} : {e}")
             continue
         # TMDB n'a rien trouvé : on garde ce qu'iTunes avait, marqué comme déjà tenté.
@@ -2394,6 +2432,22 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
                 print(f"⚠ OpenSubtitles : {e}")
                 return self.send_error(502)
             return self.send_bytes(json.dumps({"nom": nom}, ensure_ascii=False).encode(), "application/json")
+        if urlparse(self.path).path == "/tmdb":  # clé TMDB (page diagnostic) : enregistrée, puis affiches recherchées
+            n = int(self.headers.get("Content-Length") or 0)
+            if not self.admin():
+                return self.send_error(403)
+            cle = self.rfile.read(min(n, 2000)).decode("utf-8", errors="replace").strip()
+            if cle and not re.fullmatch(r"[\w.\-]{16,1000}", cle):
+                return self.send_error(400)
+            with VERROU:
+                cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+                cfg["tmdb"] = cle or None
+                CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
+                CFG["tmdb"] = cle or None
+            if EN_LIGNE[0]:
+                threading.Thread(target=enrichir, args=(cle or None,), daemon=True).start()
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/opensubtitles":  # réglages (page diagnostic)
             n = int(self.headers.get("Content-Length") or 0)
             if not self.admin():
