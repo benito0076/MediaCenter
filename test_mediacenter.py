@@ -477,4 +477,8 @@ with tempfile.TemporaryDirectory() as dd:
             pass
     m.LIB["films"][:] = _lib; m.DOSSIERS.clear()
 m.CONFIG = _conf
+# Grille : les affiches ont une taille fixe (sinon elles s'affichent en taille réelle et cachent les titres)
+import re as _re2
+_css = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "style.css"), encoding="utf-8").read()
+assert _re2.search(r"ul\.grid img[^{]*\{[^}]*width:100%[^}]*aspect-ratio:2/3", _css)
 print("OK")
