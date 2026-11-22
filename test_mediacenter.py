@@ -514,4 +514,9 @@ with tempfile.TemporaryDirectory() as dd:
     assert [(t, d) for t, d, _ in m.LIB["musique"]] == [("Bohemian", os.path.join("Musique", "Queen"))]
     assert m.dans(str(H / "Film Français" / "a.mkv"), str(H)) and not m.dans(str(H) + "2/a.mkv", str(H))
     m.LIB.update(_lib); m.DOSSIERS.clear()
+# Relance après mise à jour : pas de variables PyInstaller de l'ancien .exe (sinon « Failed to load Python DLL »)
+os.environ.update(_PYI_APPLICATION_HOME_DIR="C:/x/_MEI123", _MEIPASS2="C:/x/_MEI123")
+e = m.env_neuf()
+assert not any(k.startswith(("_PYI", "_MEI")) for k in e) and e["PYINSTALLER_RESET_ENVIRONMENT"] == "1" and "PATH" in e
+del os.environ["_PYI_APPLICATION_HOME_DIR"], os.environ["_MEIPASS2"]
 print("OK")

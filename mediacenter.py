@@ -1059,6 +1059,15 @@ def surveiller_maj():
         time.sleep(6 * 3600)
 
 
+def env_neuf():
+    """Environnement pour relancer le .exe : sans les variables internes de PyInstaller héritées de celui-ci.
+    Sinon le nouveau .exe cherche python312.dll dans le dossier temporaire de l'ancien (_MEI…), effacé à sa fermeture :
+    « Failed to load Python DLL »."""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("_PYI", "_MEI"))}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
 def appliquer_maj():
     """Télécharge le nouveau .exe à côté de l'actuel ; un petit script attend la fermeture du Media Center,
     remplace le fichier et le relance. En cas d'échec, l'ancien .exe reste en place."""
@@ -1092,7 +1101,7 @@ echo relance >> "{journal}"
 del "%~f0"
 """, encoding="utf-8")
         subprocess.Popen(["cmd", "/c", str(bat)], creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env_neuf())
         MAJ["etat"] = "redémarrage"
         threading.Timer(1, os._exit, [0]).start()  # laisse le temps de répondre à la page
     except (OSError, KeyError) as e:
