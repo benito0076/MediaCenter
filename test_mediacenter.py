@@ -527,4 +527,17 @@ if os.name == "nt":
     import subprocess as _sp
     assert _sp.Popen.__name__ == "_PopenSansFenetre"
     assert _sp.run(["cmd", "/c", "exit 3"]).returncode == 3
+# Autres vidéos : WhatsApp / téléphone / petites vidéos / dossier choisi / choix à la main ; les films restent films
+for nom in ("VID-20231105-WA0012.mp4", "WhatsApp Video 2023-11-05 at 10.12.33.mp4", "PXL_20230101_101010.mp4",
+            "IMG_1234.MOV", "VID_20240202_120000.mp4", "Grabación 2026-11-24 202632.mp4", "20230506_153012.mp4"):
+    assert m.est_autre("/x/" + nom), nom
+for nom in ("Inception.2010.1080p.mkv", "Amelie.mkv", "Le.Pacte.2015.mkv", "Video.Killed.the.Radio.Star.1999.mkv"):
+    assert not m.est_autre("/x/" + nom), nom
+m.TAILLE["/x/Formation.Excel.mp4"] = 50e6; assert m.est_autre("/x/Formation.Excel.mp4")
+m.DOSSIERS["autres"] = [os.path.join(os.sep, "x", "Formations")]
+assert m.est_autre(os.path.join(os.sep, "x", "Formations", "Module.1.mp4"))
+m.AUTRES[os.path.join(os.sep, "x", "Formations", "Vrai.Film.mkv")] = False
+assert not m.est_autre(os.path.join(os.sep, "x", "Formations", "Vrai.Film.mkv"))
+m.AUTRES["/x/Inception.mkv"] = True; assert m.est_autre("/x/Inception.mkv")
+m.AUTRES.clear(); m.TAILLE.clear(); m.DOSSIERS.clear()
 print("OK")

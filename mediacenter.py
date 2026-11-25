@@ -32,6 +32,12 @@ SUIVI_F = BASE / "mediacenter_suivi.json"
 FILE_F = BASE / "mediacenter_file.json"
 FILE = []  # file d'attente musique commune à tous les appareils : ["dossier/fichier", …]
 ENCOURS_F = BASE / "mediacenter_encours.json"
+AUTRES_F = BASE / "mediacenter_autres.json"
+AUTRES = {}  # chemin -> True (« ce n'est pas un film ») / False (« c'est un film ») : choix faits à la main sur les cartes
+TAILLE = {}  # chemin -> taille du fichier (les petites vidéos ne sont pas des films)
+# Vidéos de téléphone / WhatsApp / captures d'écran : « Autres vidéos », pas « Films ».
+MOTIF_PERSO = re.compile(r"(VID[-_]?\d{8}|WhatsApp|PXL_\d{8}|IMG_\d|MOV_\d|VID_\d|Screen ?Recording|Enregistrement de l.écran"
+                         r"|Grabaci[oó]n|video_\d{4}-\d\d-\d\d|\d{8}_\d{6})", re.I)
 LISTES_F = BASE / "mediacenter_listes.json"
 INTROS_F = BASE / "mediacenter_intros.json"
 INTROS = {}  # série -> fin du générique de début (s), pour « ⏭ Saltar intro »
@@ -172,7 +178,8 @@ MOTS_ES = {"épisode": "episodio", "épisodes": "episodios", "vu": "visto", "vus
            "Un profil enfant ne voit que les films et séries Animation, Familial ou Enfants (selon TMDB/iTunes) ; il faut le code parental pour en sortir.":
                "Un perfil infantil solo ve películas y series de Animación, Familia o Infantil (según TMDB/iTunes); hace falta el código parental para salir.",
            "Code parental incorrect": "Código parental incorrecto", "Il faut un code parental de 4 caractères ou plus": "Hace falta un código parental de 4 caracteres o más",
-           "Code parental :": "Código parental:", "Lecture": "Reproducir", "📺 Séries": "📺 Series",
+           "Code parental :": "Código parental:", "Autres vidéos": "Otros vídeos", "formations, WhatsApp…": "formaciones, WhatsApp…",
+           "C’est un film": "Es una película", "Ce n’est pas un film": "No es una película", "Lecture": "Reproducir", "📺 Séries": "📺 Series",
            "Analyse des dossiers en cours… la bibliothèque se remplit (actualise la page dans un moment).":
                "Analizando las carpetas… la biblioteca se está llenando (recarga la página en un momento).", "recherche en cours": "buscando", "dernière erreur": "último error",
            "Clé API ou jeton de lecture": "Clave API o token de lectura",
@@ -590,7 +597,7 @@ def accueil():
                 suivants.append((S()[nom("series", liste[max(vus)])].get("quand", 0), i))
     recents, series_vues = [], set()
     for k, i in sorted(videos, key=lambda x: AJOUT.get(LIB[x[0]][x[1]][2], 0), reverse=True):
-        if not affiche(k, i):  # sans affiche (formations, vidéos perso…) : pas dans les rangées de l'accueil
+        if not affiche(k, i) or (k == "films" and est_autre(LIB[k][i][2])):  # formations, vidéos perso : pas ici
             continue
         if k == "series":  # une seule carte par série
             if LIB[k][i][1] in series_vues:
@@ -607,7 +614,7 @@ def accueil():
             vues.add(LIB["series"][i][1])
             series.append(carte("series", i, " "))
     par_genre = {}
-    for i in sorted(ordre("films"), key=lambda i: -AJOUT.get(LIB["films"][i][2], 0)):
+    for i in sorted(films(), key=lambda i: -AJOUT.get(LIB["films"][i][2], 0)):
         for g in (META.get(nom("films", i)) or {}).get("genres", [])[:2]:
             par_genre.setdefault(g, []).append(i)
     genres = sorted((g for g in par_genre if len(par_genre[g]) >= 4), key=lambda g: -len(par_genre[g]))[:6]
@@ -619,12 +626,12 @@ def accueil():
 
 def vedette():
     """Film mis en avant en haut de l'accueil : un des récents avec affiche, au hasard à chaque visite."""
-    films = sorted((i for i in ordre("films") if (META.get(Path(LIB["films"][i][2]).name) or {}).get("affiche")),
+    choix = sorted((i for i in films() if (META.get(Path(LIB["films"][i][2]).name) or {}).get("affiche")),
                    key=lambda i: -AJOUT.get(LIB["films"][i][2], 0))[:15]
-    if not films:
+    if not choix:
         return ""
     import random
-    i = random.choice(films)
+    i = random.choice(choix)
     m = META[Path(LIB["films"][i][2]).name]
     infos = " · ".join(x for x in [m.get("annee", "")] + [tr_genre(g) for g in m.get("genres", [])[:3]] if x)
     fond = m.get("fond") or m["affiche"]
@@ -1225,7 +1232,8 @@ def html_diagnostic(sur_le_pc):
 
 
 def html_dossiers():
-    noms = {"films": tr("Films"), "series": tr("Séries"), "musique": tr("Musique")}
+    noms = {"films": tr("Films"), "series": tr("Séries"), "musique": tr("Musique"),
+            "autres": tr("Autres vidéos") + " (" + tr("formations, WhatsApp…") + ")"}
     lignes = "".join(
         f'<div class="dossiers"><b>{noms[k]}</b> '
         + "".join(f'<span class="dossier">{"" if Path(d).is_dir() else "❌ "}{html.escape(d)} '
@@ -1531,6 +1539,20 @@ def polices(chemin):
     return res
 
 
+def est_autre(chemin):
+    """Pas un film : choix fait à la main, dossier « Autres vidéos », nom de vidéo de téléphone/WhatsApp, ou moins de 100 Mo."""
+    if chemin in AUTRES:
+        return AUTRES[chemin]
+    if any(dans(chemin, str(Path(d))) for d in DOSSIERS.get("autres", [])):
+        return True
+    return bool(MOTIF_PERSO.search(Path(chemin).name)) or TAILLE.get(chemin, 1e12) < 100e6
+
+
+def films(autres=False):
+    """Films à montrer (ordre d'affichage), ou seulement les « Autres vidéos »."""
+    return [i for i in ordre("films") if est_autre(LIB["films"][i][2]) == autres]
+
+
 def permis(kind, i):
     """Profil enfant : seulement les films et séries dont la fiche (TMDB/iTunes) a un genre jeunesse ; sans fiche = caché.
     ponytail: la musique n'est pas filtrée (pas de genre fiable dans les tags)."""
@@ -1543,13 +1565,14 @@ def permis(kind, i):
 
 
 def dans_dossiers(kind, chemin):
-    racines = DOSSIERS[kind] + (DOSSIERS.get("films", []) if kind == "series" else [])  # épisodes rangés avec les films
+    racines = (DOSSIERS[kind] + (DOSSIERS.get("films", []) if kind == "series" else [])  # épisodes rangés avec les films
+               + (DOSSIERS.get("autres", []) if kind in ("films", "series") else []))
     return any(dans(chemin, str(Path(r))) for r in racines)
 
 
 def ajouter_dossier(kind, d):
     """Ajoute un dossier (page diagnostic), l'enregistre, puis l'analyse en arrière-plan ; renvoie le chemin retenu."""
-    if kind not in LIB or not isinstance(d, str) or not Path(d.strip().strip('"')).is_dir():
+    if kind not in [*LIB, "autres"] or not isinstance(d, str) or not Path(d.strip().strip('"')).is_dir():
         raise ValueError("dossier introuvable")
     d = str(Path(d.strip().strip('"')).resolve())
     with VERROU:
@@ -1635,7 +1658,8 @@ def _scan(dossiers):
     (ex. « H:\\ » en films, séries et musique) ; la bibliothèque se remplit au fur et à mesure."""
     nouveaux = 0
     connus = {c for k in LIB for _, _, c in LIB[k]}
-    racines = {k: [str(Path(r)) for r in dossiers.get(k, []) if Path(r).is_dir()] for k in LIB}
+    racines = {k: [str(Path(r)) for r in dossiers.get(k, []) + (dossiers.get("autres", []) if k == "films" else [])
+                   if Path(r).is_dir()] for k in LIB}
     toutes = sorted({r for v in racines.values() for r in v}, key=len)
     a_parcourir = [r for n, r in enumerate(toutes) if not any(dans(r, x) for x in toutes[:n])]
     rangés = {k: [] for k in LIB}
@@ -1682,7 +1706,8 @@ def _scan(dossiers):
                     titre = nettoyer(p.stem)[0] if kind == "films" else re.sub(r"[._]+", " ", p.stem).strip()
                 rangés[kind].append((titre or p.stem, dossier, chemin))
                 try:
-                    AJOUT[chemin] = p.stat().st_mtime  # pour « Ajoutés récemment »
+                    st = p.stat()
+                    AJOUT[chemin], TAILLE[chemin] = st.st_mtime, st.st_size  # « Ajoutés récemment », petites vidéos
                 except OSError:
                     AJOUT[chemin] = 0
                 if kind == "musique":
@@ -1810,7 +1835,7 @@ def enrichir(cle=None):
 
 
 def _enrichir(cle=None):
-    a_faire = [(Path(c).name, *nettoyer(Path(c).stem), "movie") for _, _, c in LIB["films"]]
+    a_faire = [(Path(c).name, *nettoyer(Path(c).stem), "movie") for _, _, c in LIB["films"] if not est_autre(c)]
     a_faire += [("serie:" + n, n, "", "tv") for n in dict.fromkeys(d for _, d, _ in LIB["series"])]
     # Avec TMDB, on repasse aussi sur ce qu'iTunes a trouvé (ou pas).
     # Avec TMDB (rapide), on repasse aussi sur les fiches sans genre (mises en cache avant l'ajout des filtres).
@@ -1905,6 +1930,11 @@ def charger_etat():
             d.update({k: v for k, v in json.loads(f.read_text("utf-8")).items() if isinstance(v, (int, float))} if f.exists() else {})
         except (ValueError, AttributeError):
             print(f"⚠ {f.name} illisible : ignoré")
+    AUTRES.clear()
+    try:
+        AUTRES.update({k: bool(v) for k, v in json.loads(AUTRES_F.read_text("utf-8")).items()} if AUTRES_F.exists() else {})
+    except (ValueError, AttributeError):
+        print("⚠ mediacenter_autres.json illisible : ignoré")
     LISTES.clear()
     if LISTES_F.exists():
         try:
@@ -2030,14 +2060,17 @@ def attrs_filtres(m, annee, ajout):
             f' data-genres="{html.escape("|".join(m.get("genres", [])))}"')
 
 
-def carte_film(i, titre, chemin):
+def carte_film(i, titre, chemin, autre=False):
     m = META.get(Path(chemin).name) or {}
     t, a = m.get("titre") or titre, m.get("annee", "")
-    img = f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche") else '<div class="ph">🎬</div>'
+    img = (f'<img src="{html.escape(m["affiche"])}" loading="lazy" alt="">' if m.get("affiche")
+           else f'<div class="ph">{"📹" if autre else "🎬"}</div>')
     attrs, extra = suivi(chemin)
     attrs += attrs_filtres(m, a or nettoyer(Path(chemin).stem)[1], AJOUT.get(chemin))
     return (f'<li data-id="{i}" data-t="{html.escape(t)}{" (" + a + ")" if a else ""}" data-r="{html.escape(m.get("resume", ""))}"{attrs}>'
-            f'{img}{html.escape(t)}<small>{a}</small>{extra}</li>')
+            f'{img}{html.escape(t)}<small>{a}</small>{extra}'
+            f'<b class="ap" data-autre="{0 if autre else 1}" title="{tr("C’est un film") if autre else tr("Ce n’est pas un film")}">'
+            f'{"🎬" if autre else "🚫"}</b></li>')
 
 
 def ligne_musique(i, titre, dossier, chemin, premier):
@@ -2087,6 +2120,15 @@ def page_serie(nom):
     items = "".join(f'<li data-id="{i}" data-t="{html.escape(nom)} {html.escape(t)}" data-r="{r}"{a}>{html.escape(t)}{x}</li>'
                     for i in ordre("series") for t, d, c in [LIB["series"][i]] if d == nom for a, x in [suivi(c)])
     return intro, items
+
+
+def compte(k):
+    return len({LIB[k][i][1] for i in ordre(k)}) if k == "series" else len(films()) if k == "films" else len(ordre(k))
+
+
+def onglet_autres(actif):
+    n = len(films(autres=True))
+    return f'<a class="tab {"on" if actif else ""}" href="/?k=films&amp;autres=1">{tr("Autres vidéos")} ({n})</a>' if n else ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2277,8 +2319,9 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "accueil":
             return self.page_accueil()
         intro, grid = '<h2 id="dt"></h2><p id="dr"></p>', kind == "films"
+        autres = kind == "films" and "autres" in qs
         if kind == "films":
-            items = "".join(carte_film(i, *LIB[kind][i][::2]) for i in ordre(kind))
+            items = "".join(carte_film(i, *LIB[kind][i][::2], autre=autres) for i in films(autres))
             intro = barre_filtres("films") + intro
         elif kind == "series" and "s" in qs:
             intro, items = page_serie(qs["s"][0])
@@ -2321,8 +2364,8 @@ class Handler(BaseHTTPRequestHandler):
         body = body.replace("{accueil}", "").replace("{profils}", html_profils()).replace(
             "{outils}", bandeau_outils() if self.client_address[0] in ("127.0.0.1", "::1") else "")
         for k in LIB:  # compteur des séries = nombre de séries, pas d'épisodes
-            n = len({LIB[k][i][1] for i in ordre(k)}) if k == "series" else len(ordre(k))
-            body = body.replace("{" + k + "}", "on" if k == kind else "").replace("{n" + k + "}", str(n))
+            body = body.replace("{" + k + "}", "on" if k == kind and not autres else "").replace("{n" + k + "}", str(compte(k)))
+        body = body.replace("{autres}", onglet_autres(autres))
         body = (body.replace("{grid}", "grid" if grid else "").replace("{player}", player).replace("{intro}", intro)
                 .replace("{items}", items).replace("{kind}", kind).replace("{pied}", pied)
                 .replace("{ampli}", Path(LECTEUR[0]).stem if LECTEUR[0] else "").replace("{cast}", "1" if RESEAU[0] else "").replace("{ffmpeg}", "1" if FFMPEG and FFPROBE else "")
@@ -2342,8 +2385,8 @@ class Handler(BaseHTTPRequestHandler):
         body = gabarit()[:gabarit().index("<main>")].replace("{accueil}", "on" if onglet == "accueil" else "")
         body = body.replace("{profils}", html_profils())
         for k in LIB:
-            n = len({LIB[k][i][1] for i in ordre(k)}) if k == "series" else len(ordre(k))
-            body = body.replace("{" + k + "}", "").replace("{n" + k + "}", str(n))
+            body = body.replace("{" + k + "}", "").replace("{n" + k + "}", str(compte(k)))
+        body = body.replace("{autres}", onglet_autres(False))
         body = (body + "<main>" + contenu + "</main><script>" + script + """
 const cartes=[...document.querySelectorAll('.carte')];
 q.oninput=()=>{const s=q.value.toLowerCase();cartes.forEach(c=>c.hidden=!c.textContent.toLowerCase().includes(s))};
@@ -2711,6 +2754,17 @@ document.getElementById('lg').onclick=async()=>{await fetch('/langue',{method:'P
                 return self.send_error(400)
             self.send_response(204)
             return self.end_headers()
+        m = re.fullmatch(r"/autre/(\d+)", urlparse(self.path).path)
+        if m:  # bouton 🚫 / 🎬 sur une carte : range la vidéo dans « Autres vidéos » ou dans « Films »
+            n = int(self.headers.get("Content-Length") or 0)
+            i, v = int(m[1]), self.rfile.read(min(n, 10)).strip()
+            if i >= len(LIB["films"]) or v not in (b"0", b"1") or profil_actif() in ENFANTS:
+                return self.send_error(400)
+            with VERROU:
+                AUTRES[LIB["films"][i][2]] = v == b"1"
+                AUTRES_F.write_text(json.dumps(AUTRES, ensure_ascii=False), "utf-8")
+            self.send_response(204)
+            return self.end_headers()
         if urlparse(self.path).path == "/intro":  # {"serie", "fin": secondes} ; fin = 0 : oublié
             n = int(self.headers.get("Content-Length") or 0)
             try:
@@ -2811,7 +2865,7 @@ def main():
         CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
     CFG.update(cfg)
     LANGUE[0] = cfg.get("langue") or langue_systeme()
-    DOSSIERS.update({k: list(cfg.get(k, [])) for k in LIB})
+    DOSSIERS.update({k: list(cfg.get(k, [])) for k in [*LIB, "autres"]})
     dossiers = DOSSIERS  # même objet partout : un dossier ajouté depuis la page est vu par l'analyse régulière
     if not any(dossiers.values()) and sys.stdin and sys.stdin.isatty():  # 1er lancement (double-clic sur le .exe)
         print("Premier lancement : indique tes dossiers (copier-coller le chemin, ou Entrée pour passer).")

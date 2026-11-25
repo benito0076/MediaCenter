@@ -9,6 +9,9 @@ function save(){if(!vid){if(cur>=0&&proprio)navigator.sendBeacon('/encours',  //
  l.dataset.pos=p.currentTime;if(p.duration&&p.currentTime>.9*p.duration){l.classList.add('vu');l.dataset.pos=0}}
 p.ontimeupdate=()=>{if(Math.abs(p.currentTime-last)>10){last=p.currentTime;save()}};
 p.onpause=save;addEventListener('pagehide',save);
+// 🚫 / 🎬 : range la vidéo dans « Autres vidéos » (formations, WhatsApp…) ou la remet dans « Films »
+document.querySelectorAll('.ap').forEach(b=>b.onclick=async e=>{e.stopPropagation();const l=b.closest('li');
+ if((await fetch('/autre/'+l.dataset.id,{method:'POST',body:b.dataset.autre})).ok)l.remove()});
 document.querySelectorAll('.ck').forEach(b=>b.onclick=e=>{e.stopPropagation();const l=b.closest('li'),v=!l.classList.contains('vu');
  l.classList.toggle('vu',v);l.dataset.pos=0;const bar=l.querySelector('.bar');if(bar)bar.remove();envoi(l,{vu:v})});
 // Source : lecture directe, ou conversion à la volée par le PC (HLS) si le navigateur ne sait pas lire la vidéo.

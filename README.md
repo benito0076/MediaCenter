@@ -14,6 +14,12 @@ Windows SmartScreen peut avertir (programme non signé) : *Informations complém
 ## Dossiers (plusieurs par catégorie)
 Page **🩺 Diagnostic** (sur le PC) → *📁 Dossiers* : **➕ Ajouter un dossier** ouvre la fenêtre habituelle de Windows (sur l'écran du PC) ; on peut en mettre autant qu'on veut pour les films, les séries et la musique (plusieurs disques, par exemple). Le dossier est analysé tout de suite, sans redémarrer. **✖** retire un dossier de la bibliothèque (les fichiers ne sont pas supprimés). En ligne de commande, répéter l'option marche aussi : `--films "D:\Films" --films "E:\Films"`.
 
+## Autres vidéos (WhatsApp, formations…)
+Ce qui n'est pas un film va dans l'onglet **Autres vidéos** au lieu de **Films** (et n'apparaît pas sur l'accueil) :
+- automatiquement : vidéos WhatsApp et de téléphone (`VID-20231105-WA0012`, `WhatsApp Video…`, `PXL_…`, `IMG_…`, captures d'écran) et vidéos de moins de 100 Mo ;
+- par dossier : **🩺 Diagnostic → 📁 Dossiers → Autres vidéos → ➕ Ajouter un dossier** (par exemple ton dossier de formations) ;
+- à la main : au survol d'une carte, **🚫** (« ce n'est pas un film ») ; dans *Autres vidéos*, **🎬** la remet dans *Films*.
+
 ## Langue / Idioma
 Interface en **français** ou en **espagnol** : celle de Windows par défaut, bouton **🌐** en haut pour changer (ou `--langue es|fr`). Les sous-titres choisis d'office suivent la langue. Seule l'interface est traduite, jamais les titres de ta bibliothèque.
 
