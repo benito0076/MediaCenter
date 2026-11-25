@@ -13,6 +13,15 @@ from urllib.parse import urlparse, parse_qs, urlencode, quote, unquote
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+if os.name == "nt":
+    class _PopenSansFenetre(subprocess.Popen):
+        """Le .exe n'a pas de console : sans ce drapeau, chaque ffmpeg/ffprobe (toutes les 6 s pendant une conversion
+        à la volée) ouvrirait une fenêtre noire de terminal. subprocess.run passe aussi par ici."""
+        def __init__(self, *args, **kwargs):
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+            super().__init__(*args, **kwargs)
+    subprocess.Popen = _PopenSansFenetre
+
 # .exe (PyInstaller) : données à côté du .exe, ressources (JASSUB) dans le dossier temporaire du .exe.
 GELE = getattr(sys, "frozen", False)
 BASE = Path(sys.executable).parent if GELE else Path(__file__).parent

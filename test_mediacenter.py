@@ -522,4 +522,9 @@ os.environ.update(_PYI_APPLICATION_HOME_DIR="C:/x/_MEI123", _MEIPASS2="C:/x/_MEI
 e = m.env_neuf()
 assert not any(k.startswith(("_PYI", "_MEI")) for k in e) and e["PYINSTALLER_RESET_ENVIRONMENT"] == "1" and "PATH" in e
 del os.environ["_PYI_APPLICATION_HOME_DIR"], os.environ["_MEIPASS2"]
+# Windows : aucun programme lancé n'ouvre de fenêtre de terminal (ffmpeg toutes les 6 s pendant une conversion)
+if os.name == "nt":
+    import subprocess as _sp
+    assert _sp.Popen.__name__ == "_PopenSansFenetre"
+    assert _sp.run(["cmd", "/c", "exit 3"]).returncode == 3
 print("OK")
